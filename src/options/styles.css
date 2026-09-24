@@ -1,0 +1,94 @@
+@import '../popup/styles.css';
+
+.layout { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
+aside { background: var(--bg-elev); border-right: 1px solid var(--border); padding: 16px 12px; }
+.brand { font-weight: 700; font-size: 18px; margin-bottom: 16px; }
+nav button {
+  display: block; width: 100%; text-align: left;
+  background: transparent; border: none; padding: 8px 10px;
+  border-radius: 8px; color: var(--fg); cursor: pointer;
+}
+nav button.active, nav button:hover { background: var(--bg); }
+section.content { padding: 24px 28px; overflow: auto; }
+h1 { font-size: 22px; margin: 0 0 16px; }
+h2 { font-size: 16px; margin: 20px 0 10px; }
+.row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.row label { width: 140px; color: var(--muted); }
+.row input, .row select, .row textarea {
+  flex: 1; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg); color: var(--fg);
+}
+.row .small { flex: 0 0 120px; }
+.btn {
+  background: var(--accent); color: var(--accent-fg); border: none;
+  padding: 8px 14px; border-radius: 8px; cursor: pointer;
+}
+.btn.ghost { background: transparent; color: var(--fg); border: 1px solid var(--border); }
+.btn.danger { background: var(--danger); }
+.toolbar { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
+.toolbar input { flex: 1; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-weight: 500; }
+.status-pill { padding: 1px 6px; border-radius: 999px; font-size: 11px; border: 1px solid var(--border); }
+.status-active { color: var(--ok); border-color: var(--ok); }
+.status-broken, .status-duplicate { color: var(--danger); border-color: var(--danger); }
+.status-redirected { color: var(--accent); border-color: var(--accent); }
+.status-loading { color: var(--muted); border-color: var(--muted); }
+.actions-col { display: flex; gap: 6px; }
+.kbd { font-family: ui-monospace, SFMono-Regular, monospace; background: var(--bg-elev); padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border); }
+
+/* 批量操作 */
+table input[type="checkbox"] { cursor: pointer; }
+.batch-toast {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  min-width: 320px;
+  max-width: 420px;
+  background: var(--bg-elev);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 16px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  z-index: 60;
+  font-size: 13px;
+}
+.batch-toast h4 { margin: 0 0 6px; font-size: 14px; }
+.batch-toast .bar {
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 6px 0;
+}
+.batch-toast .bar > div {
+  height: 100%;
+  background: var(--accent);
+  transition: width 200ms ease-out;
+}
+.batch-toast .stats { display: flex; gap: 12px; font-size: 12px; color: var(--muted); }
+.batch-toast .stats .ok { color: var(--ok); }
+.batch-toast .stats .fail { color: var(--danger); }
+.batch-toast .errors {
+  margin-top: 8px;
+  max-height: 100px;
+  overflow: auto;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--bg);
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.batch-toast .close {
+  float: right;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+.batch-toast .close:hover { color: var(--fg); }
