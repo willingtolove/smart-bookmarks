@@ -5,3 +5,12 @@ dist/
 *.log
 .env
 .env.local
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# Build artifacts for config files (kept as .ts sources only)
+manifest.config.d.ts
+manifest.config.js
+vite.config.d.ts
+vite.config.js
