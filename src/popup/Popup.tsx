@@ -53,39 +53,62 @@ export function Popup() {
       <header>
         <input
           autoFocus
-          placeholder="搜索书签、标签、分类或语义…"
+          placeholder="搜索书签、标签、摘要或语义…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
         <button onClick={onSave} title="保存当前页 (Ctrl+Shift+S)">＋ 保存</button>
       </header>
       <main>
-        {loading && <div className="empty"><span className="spinner" /></div>}
-        {!loading && results.length === 0 && <div className="empty">未找到匹配的书签</div>}
+        {loading && (
+          <div className="empty">
+            <span className="spinner" />
+          </div>
+        )}
+        {!loading && results.length === 0 && (
+          <div className="empty">
+            <span className="empty-icon">{q.trim() ? '🔍' : '🔖'}</span>
+            <div className="empty-title">
+              {q.trim() ? '没有匹配的书签' : '还没有书签'}
+            </div>
+            <div className="empty-hint">
+              {q.trim() ? '试试更短的关键词，或清空搜索看推荐' : '按 Ctrl+Shift+S 保存当前页面'}
+            </div>
+          </div>
+        )}
         {results.map((b) => (
           <div className="item" key={b.id} onClick={() => api.openUrl(b.url)}>
-            <img className="fav" src={b.favicon ?? `https://www.google.com/s2/favicons?domain=${new URL(b.url).hostname}`} alt="" />
+            <img
+              className="fav"
+              src={b.favicon ?? `https://www.google.com/s2/favicons?domain=${new URL(b.url).hostname}`}
+              alt=""
+            />
             <div className="meta">
               <div className="title">{b.title}</div>
               <div className="url">{b.url}</div>
-              {b.ai?.tags?.length || b.ai?.summary || b.status !== 'active' ? (
+              {b.ai?.summary && <div className="summary" title={b.ai.summary}>{b.ai.summary}</div>}
+              {(b.ai?.tags?.length || b.status !== 'active') && (
                 <div className="badges">
-                  {b.ai?.summary && <span className="badge ai" title={b.ai.summary}>AI</span>}
                   {b.ai?.tags?.slice(0, 3).map((t) => <span className="badge" key={t}>#{t}</span>)}
                   {b.status === 'broken' && <span className="badge break">死链</span>}
                   {b.status === 'redirected' && <span className="badge">已重定向</span>}
                 </div>
-              ) : null}
+              )}
             </div>
             <div className="actions">
-              <button onClick={(e) => { e.stopPropagation(); onDelete(b.id); }} title="删除">✕</button>
+              <button
+                onClick={(e) => { e.stopPropagation(); onDelete(b.id); }}
+                title="删除"
+              >
+                ✕
+              </button>
             </div>
           </div>
         ))}
       </main>
       <footer>
         <button onClick={() => api.openOptions()}>⚙ 打开管理面板</button>
-        <span style={{ color: 'var(--muted)' }}>{results.length} 条</span>
+        <span>{results.length} 条</span>
       </footer>
       {toast && <div className="toast">{toast}</div>}
     </div>

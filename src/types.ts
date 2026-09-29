@@ -35,6 +35,17 @@ export interface Bookmark {
   categoryId?: ID;
   tagIds: ID[];
   ai?: AiMeta;
+  browserId?: string;      // chrome.bookmarks API 的 id，用于跟 Chrome 原生书签库做反向关联
+  /**
+   * enrich 流水线的处理结果：
+   * - pending：刚保存还没跑
+   * - ok：content 抽取 + AI 分类都成功（embedding 可选）
+   * - partial：content 抽取成功但 AI 分类失败（仍有 content 可搜索，只是没标签/分类/摘要）
+   * - failed：content 抽取就失败了（无法做 AI 分类）
+   */
+  enrichStatus?: 'pending' | 'ok' | 'partial' | 'failed';
+  enrichError?: string;    // 主要失败原因（extract / classify / embed）
+  enrichedAt?: number;     // 上次跑 enrich 的时间
   createdAt: number;
   updatedAt: number;
   lastVisitedAt?: number;

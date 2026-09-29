@@ -4,7 +4,29 @@ import type { Bookmark, Settings } from '../types';
 
 export const api = {
   saveCurrent: () => send<{ ok: boolean }>('SAVE_CURRENT'),
-  list: () => send<{ ok: boolean; data: Bookmark[] }>('LIST_BOOKMARKS'),
+  /**
+   * 拉取全量书签。内部自动分页，避免单次 sendResponse 过大被截断。
+   * 支持可选 onProgress 回调，每页触发一次，便于 UI 展示。
+   */
+  list: async (onProgress?: (loaded: number, total: number) => void): Promise<{ ok: boolean; data: Bookmark[]; total: number }> => {
+    const PAGE = 500;
+    let offset = 0;
+    let all: Bookmark[] = [];
+    let total = 0;
+    while (true) {
+      const r = await send<{ ok: boolean; data?: Bookmark[]; total: number; hasMore: boolean }>(
+        'LIST_BOOKMARKS',
+        { offset, limit: PAGE },
+      );
+      const page = r.data ?? [];
+      total = r.total ?? total;
+      all = all.concat(page);
+      onProgress?.(all.length, total);
+      if (!r.hasMore) break;
+      offset += PAGE;
+    }
+    return { ok: true, data: all, total };
+  },
   get: (id: string) => send<{ ok: boolean; data?: Bookmark }>('GET_BOOKMARK', { id }),
   put: (payload: Bookmark) => send('PUT_BOOKMARK', { payload }),
   remove: (id: string) => send('DELETE_BOOKMARK', { id }),

@@ -58,6 +58,10 @@ export const db = {
     const d = await getDB();
     return d.getFromIndex('bookmarks', 'url', url);
   },
+  async getBookmarkByBrowserId(browserId: string): Promise<Bookmark | undefined> {
+    const all = await db.listBookmarks();
+    return all.find((b) => b.browserId === browserId);
+  },
   async putBookmark(b: Bookmark): Promise<void> {
     const d = await getDB();
     await d.put('bookmarks', b);

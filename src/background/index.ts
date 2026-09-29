@@ -9,9 +9,19 @@ import type { Bookmark, Settings } from '../types';
 
 const ALARM_DEADLINK = 'smart-bookmarks.deadlink';
 const ALARM_DUP = 'smart-bookmarks.dup';
-const SW_VERSION = '0.2.0';
+const ALARM_BROWSER_SYNC = 'smart-bookmarks.browser-sync';
+const SW_VERSION = '0.3.0';
 
 console.log('[smart-bookmarks] SW booted', { version: SW_VERSION });
+
+/** 广播书签库变更（新增 / 删除 / 批量操作 / 导入）—— 让 Options 自动刷新，避免用户手动点刷新按钮 */
+function notifyBookmarksChanged(reason: string) {
+  chrome.runtime
+    .sendMessage({ type: 'BOOKMARKS_CHANGED', payload: { reason, at: Date.now() } })
+    .catch(() => {
+      /* 没有监听者（popup / options 未打开）—— 忽略 */
+    });
+}
 
 /** ping content script 拿正文，5 秒超时；失败返回 null */
 async function pingContentForExtract(tabId: number, id: string): Promise<Extracted | null> {
@@ -51,6 +61,76 @@ async function fetchAndExtract(url: string, timeoutMs = 8000): Promise<Extracted
   }
 }
 
+/** 把 Chrome 原生书签库的一条新书签同步进 IndexedDB。已存在则更新，不存在则新建。 */
+async function syncBrowserBookmarkToLocal(browserId: string, node: chrome.bookmarks.BookmarkTreeNode) {
+  if (!node.url) return; // 跳过文件夹
+  const url = node.url;
+  const existing =
+    (await db.getBookmarkByBrowserId(browserId)) ??
+    (await db.getBookmarkByUrl(normalizeUrl(url)));
+  const now = Date.now();
+  const bookmark: Bookmark = {
+    id: existing?.id ?? newId(),
+    url,
+    title: node.title || url,
+    favicon: existing?.favicon,
+    tagIds: existing?.tagIds ?? [],
+    browserId, // 反向关联到 Chrome 原生书签 id，方便后续 onChanged 定位
+    createdAt: existing?.createdAt ?? node.dateAdded ?? now,
+    updatedAt: now,
+    visitCount: existing?.visitCount ?? 0,
+    lastVisitedAt: existing?.lastVisitedAt,
+    status: existing?.status ?? 'active',
+    // 新建的标记 pending，已存在的保留 enrichStatus 字段（不让 sync 抹掉）
+    ...(existing ? {} : { enrichStatus: 'pending' as const }),
+    description: existing?.description,
+    coverImage: existing?.coverImage,
+    content: existing?.content,
+    categoryId: existing?.categoryId,
+    folderId: existing?.folderId,
+    ai: existing?.ai,
+    enrichStatus: existing ? existing.enrichStatus : 'pending',
+    enrichError: existing?.enrichError,
+    enrichedAt: existing?.enrichedAt,
+  };
+  await db.putBookmark(bookmark);
+  // 不广播 notifyBookmarksChanged —— 同步是后台行为，避免 Options 频繁重渲染
+  console.info('[bookmark-sync] put', { id: bookmark.id, browserId, url });
+}
+
+/** 监听 Chrome 原生书签变更 —— 让"⭐按钮添加"也进入扩展数据库 */
+function setupBrowserBookmarkSync() {
+  chrome.bookmarks.onCreated.addListener(async (id, node) => {
+    try {
+      await syncBrowserBookmarkToLocal(id, node);
+      notifyBookmarksChanged('browser-sync-created');
+      // 异步 enrich（content 抽取 + AI 分类），仅当 URL 存在时
+      if (node.url) {
+        const local = await db.getBookmarkByBrowserId(id);
+        if (local) void enrichBookmark(local.id);
+      }
+    } catch (e) {
+      console.error('[bookmark-sync] onCreated failed', { id, error: e });
+    }
+  });
+
+  chrome.bookmarks.onChanged.addListener(async (id, changeInfo) => {
+    try {
+      const local = await db.getBookmarkByBrowserId(id);
+      if (!local) return; // 不在扩展库（用户可能直接清空过），跳过
+      await db.putBookmark({
+        ...local,
+        title: changeInfo.title ?? local.title,
+        url: changeInfo.url ?? local.url,
+        updatedAt: Date.now(),
+      });
+      notifyBookmarksChanged('browser-sync-changed');
+    } catch (e) {
+      console.error('[bookmark-sync] onChanged failed', { id, error: e });
+    }
+  });
+}
+
 async function getSettings(): Promise<Settings> {
   return db.getSettings();
 }
@@ -62,6 +142,7 @@ async function saveCurrentTab(tab?: chrome.tabs.Tab | null) {
   const existing = await db.getBookmarkByUrl(normalizeUrl(url));
   if (existing) {
     await db.putBookmark({ ...existing, visitCount: existing.visitCount + 1, lastVisitedAt: Date.now() });
+    notifyBookmarksChanged('visit-bump');
     return;
   }
   const now = Date.now();
@@ -76,8 +157,10 @@ async function saveCurrentTab(tab?: chrome.tabs.Tab | null) {
     visitCount: 1,
     lastVisitedAt: now,
     status: 'active',
+    enrichStatus: 'pending',
   };
   await db.putBookmark(bookmark);
+  notifyBookmarksChanged('save');
 
   // 异步跑完整 enrich（content 优先，降级 fetch；再跑 AI）
   void enrichBookmark(bookmark.id);
@@ -113,9 +196,17 @@ async function enrichBookmark(id: string) {
     }
   }
 
-  // 3) 没正文就退出（AI 没料也没意义）
+  // 3) 没正文就退出 —— 标记 failed 状态，让用户在 UI 看到
   if (!extracted) {
     console.error('[enrich] no content available', { id, url: b.url });
+    await db.putBookmark({
+      ...b,
+      enrichStatus: 'failed',
+      enrichError: '正文抽取失败（content script 无响应 + fetch 也失败）',
+      enrichedAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    notifyBookmarksChanged('enrich-failed');
     return;
   }
 
@@ -129,6 +220,8 @@ async function enrichBookmark(id: string) {
   };
 
   // 5) AI 分类
+  let classifyFailed = false;
+  let classifyError = '';
   const settings = await getSettings();
   if (settings.ai.enabled && settings.ai.apiKey) {
     const ai = new AiClient(settings.ai);
@@ -146,17 +239,28 @@ async function enrichBookmark(id: string) {
           );
         } catch (e) {
           console.error('[enrich] embed failed', { id, error: e });
+          // embedding 失败不阻塞 —— content 已写，分类已出
+          classifyError = 'embedding 失败（语义搜索不可用，分类/标签正常）';
         }
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error('[enrich] ai failed', { id, url: b.url, error: e });
+      classifyFailed = true;
+      classifyError = `AI 分类失败：${e?.message ?? String(e)}`;
     }
   } else {
-    console.info('[enrich] ai disabled or no api key, skip classification', { id });
+    // 没启用 AI：content 已写但不算"完整 ok"，标记 partial 让用户知道可以补
+    classifyFailed = true;
+    classifyError = 'AI 未启用（设置 → AI → 启用并填 Key）';
   }
 
+  updated.enrichStatus = classifyFailed ? 'partial' : 'ok';
+  updated.enrichError = classifyError || undefined;
+  updated.enrichedAt = Date.now();
+
   await db.putBookmark(updated);
-  console.info('[enrich] done', { id, hasAi: !!updated.ai });
+  notifyBookmarksChanged('enrich-' + updated.enrichStatus);
+  console.info('[enrich] done', { id, status: updated.enrichStatus, hasAi: !!updated.ai });
 }
 
 /**
@@ -237,6 +341,7 @@ async function runBatch(ids: string[], mode: BatchMode, batchId: string) {
     await sleep(200);
   }
   reportProgress(batchId, ids.length, ids.length, '', 'ok', undefined);
+  notifyBookmarksChanged(`batch-${mode}`);
   console.info(`[batch] done`, { batchId, mode });
 }
 
@@ -248,6 +353,8 @@ async function scheduleJobs() {
     chrome.alarms.clear(ALARM_DEADLINK);
   }
   chrome.alarms.create(ALARM_DUP, { periodInMinutes: 60 * 6 });
+  // 每小时一次把 Chrome 原生书签库的全量同步进 IndexedDB —— 兜底事件丢失
+  chrome.alarms.create(ALARM_BROWSER_SYNC, { periodInMinutes: 60 });
 }
 
 async function runDeadLinkSweep() {
@@ -287,15 +394,47 @@ async function runDuplicateSweep() {
   if (count > 0) console.info(`[dup] marked ${count} duplicates`);
 }
 
+/** 兜底：把 Chrome 原生书签库里所有 URL 同步进 IndexedDB（按 URL 去重） */
+async function runBrowserBookmarkResync() {
+  const tree = await chrome.bookmarks.getTree();
+  let added = 0;
+  let updated = 0;
+  const walk = async (nodes: chrome.bookmarks.BookmarkTreeNode[]) => {
+    for (const n of nodes) {
+      if (n.url) {
+        const existing = await db.getBookmarkByBrowserId(n.id);
+        if (existing) {
+          // 标题/URL 可能已被用户在浏览器里改过
+          if (existing.title !== (n.title || n.url) || existing.url !== n.url) {
+            await db.putBookmark({ ...existing, title: n.title || n.url, url: n.url, updatedAt: Date.now() });
+            updated++;
+          }
+        } else {
+          await syncBrowserBookmarkToLocal(n.id, n);
+          added++;
+        }
+      }
+      if (n.children) await walk(n.children);
+    }
+  };
+  await walk(tree);
+  if (added > 0 || updated > 0) {
+    console.info(`[bookmark-sync] resync done: added ${added}, updated ${updated}`);
+    notifyBookmarksChanged('browser-sync-resync');
+  }
+}
+
 chrome.runtime.onInstalled.addListener(async () => {
   await scheduleJobs();
   await migrateBrowserBookmarks();
   setupContextMenu();
+  setupBrowserBookmarkSync();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
   await scheduleJobs();
   setupContextMenu();
+  setupBrowserBookmarkSync();
 });
 
 function setupContextMenu() {
@@ -321,8 +460,10 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         updatedAt: Date.now(),
         visitCount: 0,
         status: 'active',
+        enrichStatus: 'pending',
       };
       await db.putBookmark(b);
+      notifyBookmarksChanged('context-menu-save');
       void enrichBookmark(b.id);
     } else {
       await saveCurrentTab(tab);
@@ -337,6 +478,7 @@ chrome.commands.onCommand.addListener((cmd) => {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM_DEADLINK) void runDeadLinkSweep();
   if (alarm.name === ALARM_DUP) void runDuplicateSweep();
+  if (alarm.name === ALARM_BROWSER_SYNC) void runBrowserBookmarkResync();
 });
 
 // 消息路由（popup/options/content 共用）
@@ -350,7 +492,25 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           break;
         }
         case 'LIST_BOOKMARKS': {
-          sendResponse({ ok: true, data: await db.listBookmarks() });
+          // 分页返回：避免 1000+ 大书签（含 content + embedding）单次 sendResponse
+          // 过大导致 MV3 structured clone 静默失败
+          const offset = Number(msg.offset ?? 0);
+          const limit = Number(msg.limit ?? 500);
+          const all = await db.listBookmarks();
+          const slice = all.slice(offset, offset + limit);
+          console.info('[LIST_BOOKMARKS]', {
+            total: all.length,
+            offset,
+            returned: slice.length,
+            sampleSizeKB: all[0] ? Math.round(JSON.stringify(all[0]).length / 1024) : 0,
+          });
+          sendResponse({
+            ok: true,
+            data: slice,
+            total: all.length,
+            offset,
+            hasMore: offset + slice.length < all.length,
+          });
           break;
         }
         case 'GET_BOOKMARK': {
@@ -364,6 +524,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         }
         case 'DELETE_BOOKMARK': {
           await db.deleteBookmark(msg.id);
+          notifyBookmarksChanged('delete');
           sendResponse({ ok: true });
           break;
         }
@@ -403,6 +564,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         }
         case 'IMPORT_ALL': {
           await db.importAll(msg.payload, msg.mode);
+          notifyBookmarksChanged('import');
           sendResponse({ ok: true });
           break;
         }
@@ -445,14 +607,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 /**
- * 一次性迁移：把 Chrome 书签树导入到本地数据库
- * （如果设置 keepBrowserBookmarksInSync 开启，则每次启动还会同步）
+ * 初次安装时：把 Chrome 书签树导入到本地数据库。
+ * 已存在数据时改为增量同步（按 URL + browserId 去重），
+ * 避免用户用浏览器⭐按钮添加的书签被永久忽略。
  */
 async function migrateBrowserBookmarks() {
   try {
     const tree = await chrome.bookmarks.getTree();
-    const all = await db.listBookmarks();
-    if (all.length > 0) return;
     const items: Bookmark[] = [];
     const walk = (nodes: chrome.bookmarks.BookmarkTreeNode[]) => {
       for (const n of nodes) {
@@ -462,6 +623,7 @@ async function migrateBrowserBookmarks() {
             url: n.url,
             title: n.title || n.url,
             tagIds: [],
+            browserId: n.id,
             createdAt: n.dateAdded ?? Date.now(),
             updatedAt: Date.now(),
             visitCount: 0,
@@ -472,7 +634,27 @@ async function migrateBrowserBookmarks() {
       }
     };
     walk(tree);
-    if (items.length) await db.bulkPutBookmarks(items);
+    if (!items.length) return;
+
+    const all = await db.listBookmarks();
+    const byUrl = new Map(all.map((b) => [b.url, b]));
+    let added = 0;
+    let merged = 0;
+    for (const item of items) {
+      const existing = byUrl.get(item.url);
+      if (existing) {
+        // 已有：补上 browserId 反向关联（如果之前是通过快捷键存的，没存 browserId）
+        if (!existing.browserId) {
+          await db.putBookmark({ ...existing, browserId: item.browserId, updatedAt: Date.now() });
+          merged++;
+        }
+      } else {
+        // 新条目：标记 pending，等批量 enrich
+        await db.putBookmark({ ...item, enrichStatus: 'pending' });
+        added++;
+      }
+    }
+    console.info(`[migrate] added ${added}, merged browserId ${merged}`);
   } catch (e) {
     console.warn('[migrate] failed', e);
   }

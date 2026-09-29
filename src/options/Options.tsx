@@ -5,18 +5,24 @@ import { useDebounce } from '../ui/hooks';
 import { DEFAULT_SETTINGS, type Bookmark, type SearchResult, type Settings } from '../types';
 import { downloadJSON, newId } from '../core/util';
 
-type Tab = 'bookmarks' | 'tags' | 'categories' | 'settings' | 'cleanup';
+type Tab = 'bookmarks' | 'tags' | 'categories' | 'cleanup' | 'help' | 'settings';
+
+export type Filter = { kind: 'tag' | 'category'; value: string };
 
 export function Options() {
   const [tab, setTab] = useState<Tab>('bookmarks');
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState(false);
+  const [filter, setFilter] = useState<Filter | null>(null);
 
   const reload = async () => {
     setLoading(true);
-    const r = await api.list();
-    setBookmarks(r.data ?? []);
+    const r = await api.list((loaded, total) => {
+      console.info(`[reload] loading ${loaded}/${total}`);
+    });
+    console.info('[reload] total loaded', r.data.length, 'of', r.total);
+    setBookmarks(r.data);
     const s = await api.getSettings();
     if (s.data) setSettings(s.data);
     setLoading(false);
@@ -25,24 +31,67 @@ export function Options() {
     void reload();
   }, []);
 
+  // 监听 SW 广播的书签变更 —— Options 页打开期间，从 popup / 快捷键 / 右键菜单新增的书签会自动刷新
+  // 防抖：避免批量操作时短时间内反复 reload
+  const reloadRef = useRef(reload);
+  useEffect(() => {
+    reloadRef.current = reload;
+  });
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const handler = (msg: { type?: string; payload?: { reason?: string } }) => {
+      if (msg?.type === 'BOOKMARKS_CHANGED') {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          console.info('[BOOKMARKS_CHANGED]', msg.payload?.reason);
+          void reloadRef.current();
+        }, 300);
+      }
+    };
+    chrome.runtime.onMessage.addListener(handler);
+    return () => {
+      chrome.runtime.onMessage.removeListener(handler);
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
+  const openFiltered = (kind: Filter['kind'], value: string) => {
+    setFilter({ kind, value });
+    setTab('bookmarks');
+  };
+
   return (
     <div className="layout">
       <aside>
-        <div className="brand">🧠 Smart Bookmarks</div>
+        <div className="brand">
+          <span className="brand-logo">🧠</span>
+          <span className="brand-name">Smart Bookmarks</span>
+          <span className="brand-ver">v0.2.0</span>
+        </div>
         <nav>
-          {(['bookmarks', 'tags', 'categories', 'cleanup', 'settings'] as Tab[]).map((t) => (
+          {(['bookmarks', 'tags', 'categories', 'cleanup', 'help', 'settings'] as Tab[]).map((t) => (
             <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>
-              {labelOf(t)}
+              {iconOf(t)}
+              <span>{labelOf(t)}</span>
             </button>
           ))}
         </nav>
       </aside>
       <section className="content">
         {loading && <div style={{ color: 'var(--muted)' }}>加载中…</div>}
-        {tab === 'bookmarks' && <BookmarksView bookmarks={bookmarks} settings={settings} onChange={reload} />}
-        {tab === 'tags' && <TagsView bookmarks={bookmarks} onChange={reload} />}
-        {tab === 'categories' && <CategoriesView bookmarks={bookmarks} onChange={reload} />}
+        {tab === 'bookmarks' && (
+          <BookmarksView
+            bookmarks={bookmarks}
+            settings={settings}
+            onChange={reload}
+            filter={filter}
+            onClearFilter={() => setFilter(null)}
+          />
+        )}
+        {tab === 'tags' && <TagsView bookmarks={bookmarks} onOpenFilter={openFiltered} />}
+        {tab === 'categories' && <CategoriesView bookmarks={bookmarks} onOpenFilter={openFiltered} />}
         {tab === 'cleanup' && <CleanupView bookmarks={bookmarks} onChange={reload} />}
+        {tab === 'help' && <HelpView />}
         {tab === 'settings' && (
           <SettingsView
             settings={settings}
@@ -58,28 +107,95 @@ export function Options() {
 }
 
 function labelOf(t: Tab) {
-  return { bookmarks: '🔖 书签', tags: '🏷 标签', categories: '📂 分类', cleanup: '🧹 清理', settings: '⚙ 设置' }[t];
+  return { bookmarks: '书签', tags: '标签', categories: '分类', cleanup: '清理', help: '帮助', settings: '设置' }[t];
+}
+
+/** 内联 SVG 图标 — 16x16，stroke-only，继承 currentColor */
+function iconOf(t: Tab) {
+  const stroke = { fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const };
+  const wrap = (children: React.ReactNode) => (
+    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">{children}</svg>
+  );
+  switch (t) {
+    case 'bookmarks':
+      return wrap(<path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" {...stroke} />);
+    case 'tags':
+      return wrap(<>
+        <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" {...stroke} />
+        <circle cx="7" cy="7" r="1.5" fill="currentColor" />
+      </>);
+    case 'categories':
+      return wrap(<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" {...stroke} />);
+    case 'cleanup':
+      return wrap(<>
+        <path d="M3 6h18" {...stroke} />
+        <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" {...stroke} />
+        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" {...stroke} />
+        <path d="M10 11v6M14 11v6" {...stroke} />
+      </>);
+    case 'settings':
+      return wrap(<>
+        <circle cx="12" cy="12" r="3" {...stroke} />
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" {...stroke} />
+      </>);
+    case 'help':
+      return wrap(<>
+        <circle cx="12" cy="12" r="10" {...stroke} />
+        <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" {...stroke} />
+        <circle cx="12" cy="17" r="0.5" fill="currentColor" />
+      </>);
+  }
 }
 
 function BookmarksView({
   bookmarks,
   settings,
   onChange,
+  filter,
+  onClearFilter,
 }: {
   bookmarks: Bookmark[];
   settings: Settings;
   onChange: () => Promise<void> | void;
+  filter: Filter | null;
+  onClearFilter: () => void;
 }) {
   const [q, setQ] = useState('');
   const dq = useDebounce(q, 200);
   const [results, setResults] = useState<SearchResult[]>([]);
-  const [statusFilter, setStatusFilter] = useState<'all' | Bookmark['status']>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | Bookmark['status'] | 'needs-attention'>('all');
+  const [sortBy, setSortBy] = useState<'time' | 'title' | 'visit'>('time');
   const [editing, setEditing] = useState<Bookmark | null>(null);
   const [enriching, setEnriching] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [batchProgress, setBatchProgress] = useState<BatchProgressPayload | null>(null);
   const [batchTitle, setBatchTitle] = useState<string>('');
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 统计：让用户直接看到"我的新书签到底在不在数据库"
+  const stats = useMemo(() => {
+    const now = Date.now();
+    const sevenDays = now - 7 * 24 * 60 * 60 * 1000;
+    const thirtyDays = now - 30 * 24 * 60 * 60 * 1000;
+    const byStatus: Record<Bookmark['status'], number> = { active: 0, redirected: 0, broken: 0, duplicate: 0 };
+    const byEnrich: Record<'pending' | 'ok' | 'partial' | 'failed' | 'unknown', number> = {
+      pending: 0, ok: 0, partial: 0, failed: 0, unknown: 0,
+    };
+    let recent7 = 0;
+    let recent30 = 0;
+    let withAi = 0;
+    let lastAdded = 0;
+    for (const b of bookmarks) {
+      byStatus[b.status] = (byStatus[b.status] ?? 0) + 1;
+      const es = b.enrichStatus ?? 'unknown';
+      byEnrich[es] = (byEnrich[es] ?? 0) + 1;
+      if (b.createdAt >= sevenDays) recent7++;
+      if (b.createdAt >= thirtyDays) recent30++;
+      if (b.ai?.classifiedAt) withAi++;
+      if (b.createdAt > lastAdded) lastAdded = b.createdAt;
+    }
+    return { byStatus, byEnrich, recent7, recent30, withAi, lastAdded };
+  }, [bookmarks]);
 
   const onEnrich = async (id: string) => {
     if (enriching.has(id)) return;
@@ -102,15 +218,52 @@ function BookmarksView({
 
   useEffect(() => {
     void (async () => {
-      const r = await searchBookmarks({ query: dq, bookmarks, settings, limit: 500 });
-      setResults(statusFilter === 'all' ? r : r.filter((b) => b.status === statusFilter));
+      // 1. 先按 tag/category 过滤（如果有）
+      let base = bookmarks;
+      if (filter) {
+        base = bookmarks.filter((b) =>
+          filter.kind === 'tag'
+            ? (b.ai?.tags ?? []).includes(filter.value)
+            : (b.ai?.category ?? '未分类') === filter.value,
+        );
+      }
+
+      // 2. 在过滤子集上执行搜索（或按时间排序）
+      let r: SearchResult[];
+      if (dq.trim()) {
+        r = await searchBookmarks({ query: dq, bookmarks: base, settings });
+      } else {
+        r = base
+          .slice()
+          .sort((a, b) => b.createdAt - a.createdAt)
+          .map((b) => ({ ...b, score: 0, matchType: 'exact' as const }));
+      }
+
+      // 3. 用户显式选的排序覆盖默认（search 默认按 score；用户想强制按时间/名称/访问）
+      if (sortBy === 'time') {
+        r = r.slice().sort((a, b) => b.createdAt - a.createdAt);
+      } else if (sortBy === 'title') {
+        r = r.slice().sort((a, b) => a.title.localeCompare(b.title, 'zh-CN'));
+      } else if (sortBy === 'visit') {
+        r = r.slice().sort((a, b) => (b.visitCount ?? 0) - (a.visitCount ?? 0));
+      }
+
+      // 4. 最后按状态筛选
+      if (statusFilter === 'all') {
+        setResults(r);
+      } else if (statusFilter === 'needs-attention') {
+        // pending / partial / failed / 未设置 全部算"需要关注"
+        setResults(r.filter((b) => b.enrichStatus !== 'ok'));
+      } else {
+        setResults(r.filter((b) => b.status === statusFilter));
+      }
     })();
-  }, [dq, bookmarks, settings, statusFilter]);
+  }, [filter, dq, bookmarks, settings, statusFilter, sortBy]);
 
   // Bug 3: 搜索/筛选变化时清空 selected，避免用户看不到的 id 被误操作
   useEffect(() => {
     setSelected(new Set());
-  }, [dq, statusFilter]);
+  }, [filter, dq, statusFilter]);
 
   // Bug 5: onChange 用 ref 持有，避免 SW 监听 useEffect 反复重订阅 + 闭包过期
   const onChangeRef = useRef(onChange);
@@ -195,14 +348,117 @@ function BookmarksView({
   return (
     <div>
       <h1>书签</h1>
+
+      {/* 统计行：让用户直接看到"新书签在不在数据库" */}
+      <div className="stats-line">
+        <span className="stats-item">
+          共 <strong>{bookmarks.length}</strong> 条
+        </span>
+        <span className="stats-sep">·</span>
+        <span className="stats-item">
+          7 天新增 <strong className={stats.recent7 > 0 ? 'stats-new' : ''}>{stats.recent7}</strong>
+        </span>
+        <span className="stats-sep">·</span>
+        <span className="stats-item">
+          30 天新增 <strong>{stats.recent30}</strong>
+        </span>
+        <span className="stats-sep">·</span>
+        <span className="stats-item">
+          AI 分类 <strong>{stats.withAi}</strong>
+        </span>
+        {/* enrich 状态细分：让用户知道"为什么有些没标签/没摘要"。点击直接套上筛选 */}
+        {(stats.byEnrich.pending > 0 || stats.byEnrich.partial > 0 || stats.byEnrich.failed > 0) && (
+          <>
+            {stats.byEnrich.pending > 0 && (
+              <>
+                <span className="stats-sep">·</span>
+                <button
+                  className={`stats-item stats-button ${statusFilter === 'needs-attention' ? 'active' : ''}`}
+                  onClick={() => setStatusFilter('needs-attention')}
+                  title="筛选：所有待处理的书签（pending + partial + failed）"
+                >
+                  处理中 <strong>{stats.byEnrich.pending}</strong>
+                </button>
+              </>
+            )}
+            {stats.byEnrich.partial > 0 && (
+              <>
+                <span className="stats-sep">·</span>
+                <button
+                  className={`stats-item stats-button ${statusFilter === 'needs-attention' ? 'active' : ''}`}
+                  onClick={() => setStatusFilter('needs-attention')}
+                  title="筛选：所有待处理的书签（pending + partial + failed）"
+                >
+                  ⚠ AI 失败 <strong className="stats-warn">{stats.byEnrich.partial}</strong>
+                </button>
+              </>
+            )}
+            {stats.byEnrich.failed > 0 && (
+              <>
+                <span className="stats-sep">·</span>
+                <button
+                  className={`stats-item stats-button ${statusFilter === 'needs-attention' ? 'active' : ''}`}
+                  onClick={() => setStatusFilter('needs-attention')}
+                  title="筛选：所有待处理的书签（pending + partial + failed）"
+                >
+                  ✗ 抽正文失败 <strong className="stats-warn">{stats.byEnrich.failed}</strong>
+                </button>
+              </>
+            )}
+          </>
+        )}
+        {(stats.byStatus.broken > 0 || stats.byStatus.duplicate > 0) && (
+          <>
+            {stats.byStatus.broken > 0 && (
+              <>
+                <span className="stats-sep">·</span>
+                <span className="stats-item">
+                  死链 <strong className="stats-warn">{stats.byStatus.broken}</strong>
+                </span>
+              </>
+            )}
+            {stats.byStatus.duplicate > 0 && (
+              <>
+                <span className="stats-sep">·</span>
+                <span className="stats-item">
+                  重复 <strong className="stats-warn">{stats.byStatus.duplicate}</strong>
+                </span>
+              </>
+            )}
+          </>
+        )}
+        {stats.lastAdded > 0 && (
+          <span className="stats-meta">
+            最后添加：{new Date(stats.lastAdded).toLocaleString('zh-CN')}
+          </span>
+        )}
+      </div>
+
+      {filter && (
+        <div className="filter-pill" role="status">
+          <span>
+            {filter.kind === 'tag' ? '🏷 # ' : '📂 '}
+            {filter.value}
+          </span>
+          <button onClick={onClearFilter} title="清除过滤" aria-label="清除过滤">✕</button>
+        </div>
+      )}
       <div className="toolbar">
         <input placeholder="搜索标题、URL、标签、正文…支持语义" value={q} onChange={(e) => setQ(e.target.value)} />
+        <select value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)} title="排序方式">
+          <option value="time">按时间</option>
+          <option value="title">按名称</option>
+          <option value="visit">按访问</option>
+        </select>
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as any)}>
           <option value="all">全部状态</option>
           <option value="active">正常</option>
           <option value="redirected">已重定向</option>
           <option value="broken">死链</option>
           <option value="duplicate">重复</option>
+          <optgroup label="─── AI 处理 ───">
+            <option value="needs-attention">⚠ 待处理（AI 失败 / 抽正文失败 / 未解析）</option>
+          </optgroup>
         </select>
         <button className="btn ghost" onClick={() => onChange()}>刷新</button>
         <button
@@ -235,6 +491,27 @@ function BookmarksView({
           />
         </label>
       </div>
+
+      {/* 结果计数 — 让用户感知当前规模 */}
+      {results.length > 0 && (
+        <div
+          style={{
+            marginTop: -8,
+            marginBottom: 12,
+            color: 'var(--muted)',
+            fontSize: 'var(--text-sm)',
+            fontVariantNumeric: 'tabular-nums',
+          }}
+        >
+          {(() => {
+            const parts: string[] = [];
+            if (filter) parts.push(`${filter.kind === 'tag' ? '#' : '📂 '}${filter.value}`);
+            if (dq.trim()) parts.push(`搜索「${dq.trim()}」`);
+            if (parts.length > 0) return `${parts.join(' + ')} · 共 ${results.length} 条`;
+            return `共 ${results.length} 条${bookmarks.length > results.length ? `（已从 ${bookmarks.length} 条中匹配）` : ''}`;
+          })()}
+        </div>
+      )}
 
       {/* 第二行：全选 + 多选操作 */}
       <div className="toolbar" style={{ marginTop: 8, gap: 6 }}>
@@ -301,7 +578,7 @@ function BookmarksView({
         </thead>
         <tbody>
           {results.map((b) => (
-            <tr key={b.id}>
+            <tr key={b.id} className={selected.has(b.id) ? 'selected' : ''}>
               <td>
                 <input
                   type="checkbox"
@@ -310,16 +587,63 @@ function BookmarksView({
                   onChange={() => toggleOne(b.id)}
                 />
               </td>
-              <td style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.title}</td>
-              <td style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.url}</td>
+              <td style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <a
+                  href={b.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="bookmark-title-link"
+                  title="新标签打开"
+                >
+                  {b.title}
+                </a>
+              </td>
+              <td style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <a
+                  href={b.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="bookmark-url-link"
+                  title="新标签打开"
+                >
+                  {b.url}
+                </a>
+              </td>
               <td>{b.ai?.category ?? '—'}</td>
               <td>{(b.ai?.tags ?? []).map((t) => `#${t}`).join(' ') || '—'}</td>
-              <td><span className={`status-pill status-${b.status}`}>{labelStatus(b.status)}</span></td>
+              <td>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <span className={`status-pill status-${b.status}`}>{labelStatus(b.status)}</span>
+                  {b.enrichStatus === 'pending' && (
+                    <span className="enrich-badge enrich-pending" title="enrich 处理中…">⏳</span>
+                  )}
+                  {b.enrichStatus === 'failed' && (
+                    <span
+                      className="enrich-badge enrich-failed"
+                      title={b.enrichError ?? '正文抽取失败'}
+                    >
+                      ✗
+                    </span>
+                  )}
+                  {b.enrichStatus === 'partial' && (
+                    <span
+                      className="enrich-badge enrich-partial"
+                      title={b.enrichError ?? 'AI 分类部分失败'}
+                    >
+                      ⚠
+                    </span>
+                  )}
+                </span>
+              </td>
               <td>{b.visitCount}</td>
               <td className="actions-col">
                 <button className="btn ghost" onClick={() => setEditing(b)}>编辑</button>
                 <button className="btn ghost" disabled={enriching.has(b.id)} onClick={() => onEnrich(b.id)}>
-                  {enriching.has(b.id) ? '⏳ 分析中…' : '重分类'}
+                  {enriching.has(b.id)
+                    ? '⏳ 分析中…'
+                    : b.enrichStatus === 'failed'
+                      ? '重新抽正文'
+                      : '重新分析'}
                 </button>
                 <button className="btn danger" onClick={async () => { await api.remove(b.id); onChange(); }}>删</button>
               </td>
@@ -327,6 +651,36 @@ function BookmarksView({
           ))}
         </tbody>
       </table>
+
+      {/* 空结果状态 */}
+      {results.length === 0 && (
+        <div className="empty" style={{ marginTop: 32 }}>
+          <span className="empty-icon">🔍</span>
+          <div className="empty-title">
+            {dq.trim() ? '没有匹配的书签' : filter ? '这个过滤条件下没有书签' : '还没有书签'}
+          </div>
+          <div className="empty-hint">
+            {dq.trim() ? (
+              <>
+                当前在 <strong>{bookmarks.length}</strong> 条书签中搜索「{dq.trim()}」
+                {filter && <>（叠加了 {filter.kind === 'tag' ? `#${filter.value}` : `📂 ${filter.value}`} 过滤）</>}
+                。试试更短的关键词、清空搜索框、或点击右上角「清除过滤」。
+              </>
+            ) : filter ? (
+              <>
+                数据库里有 <strong>{bookmarks.length}</strong> 条书签，但当前过滤条件下没有匹配项。
+                <div style={{ marginTop: 12 }}>
+                  <button className="btn ghost" onClick={onClearFilter}>
+                    ✕ 清除过滤查看全部
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>按 <code>Ctrl+Shift+S</code> 保存当前页面。</>
+            )}
+          </div>
+        </div>
+      )}
       {editing && <EditModal bookmark={editing} onClose={() => setEditing(null)} onSaved={onChange} />}
 
       {batchProgress && (
@@ -419,14 +773,8 @@ function EditModal({
   const [b, setB] = useState(bookmark);
   useEffect(() => setB(bookmark), [bookmark]);
   return (
-    <div
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.4)', display: 'grid', placeItems: 'center', zIndex: 50 }}
-      onClick={onClose}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{ background: 'var(--bg)', padding: 20, borderRadius: 12, width: 520, maxWidth: '90vw' }}
-      >
+    <div className="edit-modal-backdrop" onClick={onClose}>
+      <div className="edit-modal" onClick={(e) => e.stopPropagation()}>
         <h2>编辑书签</h2>
         <div className="row"><label>标题</label><input value={b.title} onChange={(e) => setB({ ...b, title: e.target.value })} /></div>
         <div className="row"><label>URL</label><input value={b.url} onChange={(e) => setB({ ...b, url: e.target.value })} /></div>
@@ -440,7 +788,7 @@ function EditModal({
         <div className="row"><label>AI 摘要</label>
           <input value={b.ai?.summary ?? ''} onChange={(e) => setB({ ...b, ai: { ...(b.ai ?? {}), summary: e.target.value } })} />
         </div>
-        <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
+        <div className="row" style={{ justifyContent: 'flex-end', marginTop: 16 }}>
           <button className="btn ghost" onClick={onClose}>取消</button>
           <button
             className="btn"
@@ -458,48 +806,155 @@ function EditModal({
   );
 }
 
-function TagsView({ bookmarks, onChange }: { bookmarks: Bookmark[]; onChange: () => Promise<void> | void }) {
+function TagsView({ bookmarks, onOpenFilter }: { bookmarks: Bookmark[]; onOpenFilter: (kind: 'tag', value: string) => void }) {
+  const [q, setQ] = useState('');
+  const [sortBy, setSortBy] = useState<'count' | 'name' | 'recent'>('count');
+
   const allTags = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const b of bookmarks) for (const t of b.ai?.tags ?? []) m.set(t, (m.get(t) ?? 0) + 1);
-    return Array.from(m.entries()).sort((a, b) => b[1] - a[1]);
-  }, [bookmarks]);
+    const m = new Map<string, { count: number; lastUsed: number }>();
+    for (const b of bookmarks) {
+      const lastUsed = b.updatedAt ?? b.createdAt;
+      for (const t of b.ai?.tags ?? []) {
+        const cur = m.get(t) ?? { count: 0, lastUsed: 0 };
+        cur.count += 1;
+        cur.lastUsed = Math.max(cur.lastUsed, lastUsed);
+        m.set(t, cur);
+      }
+    }
+    const qLower = q.trim().toLowerCase();
+    return Array.from(m.entries())
+      .map(([t, info]) => ({ t, ...info }))
+      .filter(({ t }) => !qLower || t.toLowerCase().includes(qLower))
+      .sort((a, b) => {
+        if (sortBy === 'count') return b.count - a.count || a.t.localeCompare(b.t, 'zh-CN');
+        if (sortBy === 'recent') return b.lastUsed - a.lastUsed;
+        return a.t.localeCompare(b.t, 'zh-CN');
+      });
+  }, [bookmarks, q, sortBy]);
+
+  const maxCount = useMemo(() => Math.max(1, ...allTags.map((t) => t.count)), [allTags]);
+
   return (
     <div>
       <h1>标签</h1>
-      <p style={{ color: 'var(--muted)' }}>标签由 AI 在保存时自动生成（可手动在书签编辑中修改）。</p>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-        {allTags.map(([t, n]) => (
-          <span key={t} className="status-pill">#{t} <strong>· {n}</strong></span>
-        ))}
-        {allTags.length === 0 && <p style={{ color: 'var(--muted)' }}>暂无标签 — 开启 AI 自动分类后再保存书签即可。</p>}
+      <p style={{ color: 'var(--muted)', margin: '0 0 16px' }}>
+        AI 在保存时自动生成，也可手动在书签编辑中修改。点击标签可跳转到对应书签。
+      </p>
+
+      <div className="toolbar">
+        <input
+          placeholder="搜索标签…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          autoComplete="off"
+        />
+        <select value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)}>
+          <option value="count">按数量</option>
+          <option value="name">按名称</option>
+          <option value="recent">按最近使用</option>
+        </select>
       </div>
-      <p style={{ color: 'var(--muted)', marginTop: 24 }}>刷新数据：</p>
-      <button className="btn" onClick={() => onChange()}>刷新</button>
+
+      <div className="tag-cloud">
+        {allTags.map(({ t, count, lastUsed }) => {
+          const scale = 0.85 + (count / maxCount) * 0.45;
+          const tip = `${count} 条书签 · 最近使用 ${new Date(lastUsed).toLocaleDateString()}`;
+          return (
+            <button
+              key={t}
+              className="tag-chip"
+              onClick={() => onOpenFilter('tag', t)}
+              title={tip}
+              style={{ fontSize: `${scale}em` }}
+            >
+              <span>#{t}</span>
+              <span className="tag-count">· {count}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {allTags.length === 0 && (
+        <div className="empty">
+          <span className="empty-icon">🏷</span>
+          <div className="empty-title">{q.trim() ? '没有匹配的标签' : '还没有标签'}</div>
+          <div className="empty-hint">
+            {q.trim() ? '试试更短的关键字' : '开启 AI 自动分类后再保存书签即可'}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function CategoriesView({ bookmarks }: { bookmarks: Bookmark[]; onChange: () => Promise<void> | void }) {
+function CategoriesView({ bookmarks, onOpenFilter }: { bookmarks: Bookmark[]; onOpenFilter: (kind: 'category', value: string) => void }) {
+  const [sortBy, setSortBy] = useState<'count' | 'name'>('count');
+
   const groups = useMemo(() => {
     const m = new Map<string, number>();
     for (const b of bookmarks) {
       const c = b.ai?.category ?? '未分类';
       m.set(c, (m.get(c) ?? 0) + 1);
     }
-    return Array.from(m.entries()).sort((a, b) => b[1] - a[1]);
-  }, [bookmarks]);
+    const total = Math.max(1, bookmarks.length);
+    return Array.from(m.entries())
+      .map(([c, n]) => ({ c, n, pct: (n / total) * 100 }))
+      .sort((a, b) =>
+        sortBy === 'name' ? a.c.localeCompare(b.c, 'zh-CN') : b.n - a.n || a.c.localeCompare(b.c, 'zh-CN'),
+      );
+  }, [bookmarks, sortBy]);
+
   return (
     <div>
       <h1>分类</h1>
-      <table>
-        <thead><tr><th>分类</th><th>数量</th></tr></thead>
-        <tbody>
-          {groups.map(([c, n]) => (
-            <tr key={c}><td>{c}</td><td>{n}</td></tr>
-          ))}
-        </tbody>
-      </table>
+      <p style={{ color: 'var(--muted)', margin: '0 0 16px' }}>
+        AI 在保存时自动归类。点击分类可跳转到对应书签。
+      </p>
+
+      <div className="toolbar">
+        <span style={{ color: 'var(--muted)', fontSize: 'var(--text-sm)' }}>
+          {groups.length} 个分类 · {bookmarks.length} 条书签
+        </span>
+        <select value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)}>
+          <option value="count">按数量</option>
+          <option value="name">按名称</option>
+        </select>
+      </div>
+
+      {groups.length === 0 ? (
+        <div className="empty">
+          <span className="empty-icon">📂</span>
+          <div className="empty-title">还没有分类</div>
+          <div className="empty-hint">开启 AI 自动分类后再保存书签</div>
+        </div>
+      ) : (
+        <table className="categories-table">
+          <thead>
+            <tr>
+              <th>分类</th>
+              <th style={{ width: 80 }}>数量</th>
+              <th>占比</th>
+            </tr>
+          </thead>
+          <tbody>
+            {groups.map(({ c, n, pct }) => (
+              <tr key={c} className="clickable" onClick={() => onOpenFilter('category', c)}>
+                <td>
+                  <span className="category-dot" />
+                  {c}
+                </td>
+                <td style={{ fontVariantNumeric: 'tabular-nums' }}>{n}</td>
+                <td>
+                  <span className="category-bar">
+                    <span className="category-bar-fill" style={{ width: `${pct}%` }} />
+                  </span>
+                  <span className="category-pct">{pct.toFixed(1)}%</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
@@ -585,6 +1040,189 @@ function CleanupView({
           </ul>
         </div>
       ))}
+    </div>
+  );
+}
+
+/**
+ * 帮助页：使用说明 + FAQ + 快捷键 + 数据存储位置。
+ * 设计原则：把 80% 用户最常见的疑问用结构化文档一次性答完。
+ */
+function HelpView() {
+  return (
+    <div className="help">
+      <h1>使用说明</h1>
+      <p className="help-intro">
+        Smart Bookmarks 是带 AI 自动分类、语义搜索、死链检测、浏览器原生书签双向同步的智能书签管理器。
+      </p>
+
+      {/* ============ 快速开始 ============ */}
+      <section className="help-section">
+        <h2>🚀 快速开始</h2>
+        <ol className="help-steps">
+          <li>
+            <strong>保存第一个书签</strong> — 用浏览器右上角的⭐按钮（或 <kbd>Ctrl+Shift+S</kbd>）。
+            本扩展会自动把它同步进来，并异步抓取正文 + 调用 AI 自动分类。
+          </li>
+          <li>
+            <strong>等待几秒</strong> — AI 分类通常 2-5 秒完成，期间状态栏显示「正常」，分类后会出现标签。
+          </li>
+          <li>
+            <strong>试试搜索</strong> — 打开 popup（点击工具栏图标）或在「书签」页搜索框输入关键词。
+            支持模糊匹配 + 语义相似度（需要先在「设置」里配置 AI Key）。
+          </li>
+        </ol>
+      </section>
+
+      {/* ============ 三种保存方式 ============ */}
+      <section className="help-section">
+        <h2>💾 三种保存方式</h2>
+        <div className="help-cards">
+          <div className="help-card">
+            <div className="help-card-title">① 浏览器⭐按钮 <span className="help-recommend">推荐</span></div>
+            <p>Chrome / Edge 工具栏的星号按钮，保存后扩展自动同步进来。无需切窗口。</p>
+          </div>
+          <div className="help-card">
+            <div className="help-card-title">② 快捷键 <kbd>Ctrl+Shift+S</kbd></div>
+            <p>在任何网页按一下就保存。Mac 用户是 <kbd>⌘+Shift+S</kbd>。可在 <code>chrome://extensions/shortcuts</code> 改键。</p>
+          </div>
+          <div className="help-card">
+            <div className="help-card-title">③ 右键菜单</div>
+            <p>右键页面 →「保存到 Smart Bookmarks」。也可以右键链接直接保存链接目标。</p>
+          </div>
+        </div>
+      </section>
+
+      {/* ============ 搜索技巧 ============ */}
+      <section className="help-section">
+        <h2>🔍 搜索技巧</h2>
+        <ul className="help-list">
+          <li>
+            <strong>模糊搜索</strong> — 输入关键词，会匹配标题 / URL / 标签 / 摘要 / 正文。
+            例如搜「react」能命中正文里有 react 字样的文章。
+          </li>
+          <li>
+            <strong>语义搜索</strong> — 开启 AI 后，搜「AI 相关的内容」会返回主题相近但没用这些词的书签。
+            底层用向量余弦相似度（threshold 0.5）。
+          </li>
+          <li>
+            <strong>叠加过滤</strong> — 在「标签」或「分类」页点击，会跳转到书签页并预过滤。
+            搜索框 + 过滤是<strong>交集</strong>，不是互斥。
+          </li>
+          <li>
+            <strong>排序</strong> — 工具栏可切按时间 / 名称 / 访问次数。无关键词默认按时间倒序。
+          </li>
+        </ul>
+      </section>
+
+      {/* ============ AI 自动分类 ============ */}
+      <section className="help-section">
+        <h2>🧠 AI 自动分类</h2>
+        <p>保存时自动跑（如果启用了 AI）：</p>
+        <ul className="help-list">
+          <li>抓取网页正文（最长 8000 字）</li>
+          <li>调用 LLM 生成中文摘要、分类、3-5 个标签</li>
+          <li>如配置了 embedding 模型，会生成向量用于语义搜索</li>
+        </ul>
+        <p className="help-tip">
+          <strong>没启用 AI 也能用</strong> — 基础搜索（标题 / URL）不依赖 AI。
+          只是不会有摘要、标签、分类、语义搜索。AI Key 在「设置」页填，支持 OpenAI / DeepSeek / 任意 OpenAI 兼容服务。
+        </p>
+      </section>
+
+      {/* ============ 清理 ============ */}
+      <section className="help-section">
+        <h2>🧹 清理</h2>
+        <ul className="help-list">
+          <li>
+            <strong>死链检测</strong> — 按设置里的周期自动检查，把失效书签标为「死链」。
+            也可在「清理」页手动触发。
+          </li>
+          <li>
+            <strong>重复合并</strong> — 每 6 小时跑一次，按 URL 规范化后去重，保留访问次数最多的。
+            重复项标为「重复」状态（不自动删除，可在「清理」页查看）。
+          </li>
+        </ul>
+      </section>
+
+      {/* ============ 数据 ============ */}
+      <section className="help-section">
+        <h2>📦 数据存储</h2>
+        <ul className="help-list">
+          <li>
+            所有书签 + AI 分类 + 设置存在浏览器的 <strong>IndexedDB</strong> 里，
+            数据库名 <code>smart-bookmarks</code>，结构见 <code>src/core/db.ts</code>。
+          </li>
+          <li>
+            <strong>导出 / 导入</strong>：在「书签」页用「导出 / 导入」按钮。
+            导入支持「合并」和「覆盖」两种模式。
+          </li>
+          <li>
+            <strong>浏览器原生书签</strong>：双向同步。
+            你用⭐按钮加的书签会同步进扩展；在扩展里删除的书签<strong>不会</strong>反向删除浏览器书签（避免误操作）。
+          </li>
+          <li>
+            <strong>卸载扩展会清空所有数据</strong>。建议定期导出备份。
+          </li>
+        </ul>
+      </section>
+
+      {/* ============ FAQ ============ */}
+      <section className="help-section">
+        <h2>❓ 常见问题</h2>
+
+        <details className="help-faq" open>
+          <summary>为什么保存的书签搜不到？</summary>
+          <ol>
+            <li>先确认「书签」页统计行 — 如果「共 X 条」没增加，可能是保存路径没触发（点⭐按钮 / 快捷键 / 右键）。</li>
+            <li>如果统计行增加了但搜索没结果，可能是过滤条件限制。在「标签」/「分类」页点过过滤会缩小范围，试试清空搜索框或点过滤胶囊的 ✕。</li>
+            <li>语义搜索要求已配 AI Key + 已 enrich 过。</li>
+          </ol>
+        </details>
+
+        <details className="help-faq">
+          <summary>AI Key 安全吗？</summary>
+          <p>存在浏览器本地 IndexedDB，不会上传到任何第三方。
+            仅在调用 AI 接口时直接发到你配置的 baseUrl（默认 OpenAI）。
+            如果你使用自托管或代理服务，请确认 baseUrl 可信。
+          </p>
+        </details>
+
+        <details className="help-faq">
+          <summary>语义搜索和关键词搜索有什么区别？</summary>
+          <p>关键词搜索精确但不会「猜」你的意思；语义搜索能匹配主题相近但字面不同的内容。
+            例如搜「深度学习」相关文章，关键词会漏掉标题是「Neural Network Basics」的内容，语义能命中。
+            两者在结果里会按 score 合并排序，取较高分。</p>
+        </details>
+
+        <details className="help-faq">
+          <summary>如何批量重分类 / 重抽正文？</summary>
+          <p>在「书签」页勾选要处理的书签（可点表头全选当前页），下方会出现「重分类」/「重抽正文」按钮。
+            后台异步跑，进度显示在右下角 Toast 里。</p>
+        </details>
+
+        <details className="help-faq">
+          <summary>卸载后数据还在吗？</summary>
+          <p>IndexedDB 数据随扩展一起删除。再次安装后是空白状态。
+            想迁移设备：在旧设备「导出」→ 在新设备「导入」。</p>
+        </details>
+
+        <details className="help-faq">
+          <summary>支持哪些浏览器？</summary>
+          <p>所有 Manifest V3 的 Chromium 内核浏览器（Chrome、Edge、Brave、Arc 等）。
+            Firefox 需要单独打包，本扩展当前未提供 Firefox 版本。</p>
+        </details>
+      </section>
+
+      {/* ============ 版本 ============ */}
+      <section className="help-section help-footer">
+        <h2>📝 版本</h2>
+        <ul className="help-list">
+          <li><strong>v0.3.0</strong> — 新增浏览器原生⭐按钮双向同步 / 自动刷新 / 统计行 / 帮助页</li>
+          <li><strong>v0.2.0</strong> — 整体 UI 精致功能风改版 / 标签可视化 / 分类可视化</li>
+          <li><strong>v0.1.0</strong> — 初始版本 / AI 自动分类 / 语义搜索 / 死链检测</li>
+        </ul>
+      </section>
     </div>
   );
 }
