@@ -1110,7 +1110,12 @@ function HelpView() {
             搜索框 + 过滤是<strong>交集</strong>，不是互斥。
           </li>
           <li>
-            <strong>排序</strong> — 工具栏可切按时间 / 名称 / 访问次数。无关键词默认按时间倒序。
+            <strong>排序</strong> — 工具栏的下拉可切「按时间」/「按名称」/「按访问次数」。
+            无关键词默认按时间倒序；有搜索结果时默认按相关度。
+          </li>
+          <li>
+            <strong>状态筛选</strong> — 工具栏另一个下拉：「全部状态」/「正常」/「死链」/「重复」，
+            加上分组里的「⚠ 待处理」（只看 enrich 失败的条目）。
           </li>
         </ul>
       </section>
@@ -1158,8 +1163,13 @@ function HelpView() {
             导入支持「合并」和「覆盖」两种模式。
           </li>
           <li>
-            <strong>浏览器原生书签</strong>：双向同步。
-            你用⭐按钮加的书签会同步进扩展；在扩展里删除的书签<strong>不会</strong>反向删除浏览器书签（避免误操作）。
+            <strong>浏览器原生书签双向同步</strong>（v0.3.0 起）：
+            <ul>
+              <li>⭐按钮加书签 → 实时同步进扩展（带 browserId 反向关联）</li>
+              <li>浏览器里改标题/URL → 同步更新扩展</li>
+              <li>每小时全量 resync 兜底事件丢失</li>
+              <li><strong>单向</strong>：扩展里删除的书签<strong>不会</strong>反向删除浏览器书签（避免误操作）</li>
+            </ul>
           </li>
           <li>
             <strong>卸载扩展会清空所有数据</strong>。建议定期导出备份。
@@ -1174,10 +1184,30 @@ function HelpView() {
         <details className="help-faq" open>
           <summary>为什么保存的书签搜不到？</summary>
           <ol>
-            <li>先确认「书签」页统计行 — 如果「共 X 条」没增加，可能是保存路径没触发（点⭐按钮 / 快捷键 / 右键）。</li>
-            <li>如果统计行增加了但搜索没结果，可能是过滤条件限制。在「标签」/「分类」页点过过滤会缩小范围，试试清空搜索框或点过滤胶囊的 ✕。</li>
-            <li>语义搜索要求已配 AI Key + 已 enrich 过。</li>
+            <li>看「书签」页顶部的<strong>统计行</strong>：如果「共 X 条」没增加，说明保存路径没触发（点⭐按钮 / 快捷键 / 右键）。v0.3.0 起三种入口都生效。</li>
+            <li>如果「共 X 条」增加了但搜索没结果，看统计行有没有「⚠ AI 失败」/「✗ 抽正文失败」— 这种书签的标签/摘要为空，关键词搜不到。点击数字会自动套上「待处理」筛选。</li>
+            <li>可能是过滤条件限制。在「标签」/「分类」页点过过滤会缩小范围，试试清空搜索框或点过滤胶囊的 ✕。</li>
+            <li>语义搜索要求已配 AI Key + 已 enrich 过（看 enrich 徽标 ⏳ → ✓ 后才能搜）。</li>
           </ol>
+        </details>
+
+        <details className="help-faq">
+          <summary>状态列上的 ⏳ / ⚠ / ✗ 徽标是什么意思？</summary>
+          <p>这是 <strong>enrich 流水线状态</strong>，每个书签保存后会自动跑（抽正文 + AI 分类）：</p>
+          <ul>
+            <li><strong>⏳ pending</strong> — 刚保存还在跑（通常 2-5 秒）。</li>
+            <li><strong>⚠ partial</strong> — 正文抽到了但 AI 分类失败（或 AI 未启用 / embedding 失败）。hover 徽标看具体原因。</li>
+            <li><strong>✗ failed</strong> — 正文抽取就失败了（content script 无响应 + fetch 也失败）。通常是网络问题或页面反爬。</li>
+            <li><strong>无徽标</strong> — 全部成功。</li>
+          </ul>
+          <p>点击行操作里的「重新分析」/「重新抽正文」按钮可重试（按钮文案会按状态智能变化）。</p>
+        </details>
+
+        <details className="help-faq">
+          <summary>状态筛选下拉里的「⚠ 待处理」是什么？</summary>
+          <p>等价于"所有 enrich 没有成功的书签"（pending + partial + failed + 旧数据）。
+            选中后会只显示这些需要关注的条目，方便批量点「重新分析」重跑。
+            也可以直接点统计行里的「⚠ AI 失败 X」/「✗ 抽正文失败 X」数字，自动套上这个筛选。</p>
         </details>
 
         <details className="help-faq">
@@ -1218,7 +1248,19 @@ function HelpView() {
       <section className="help-section help-footer">
         <h2>📝 版本</h2>
         <ul className="help-list">
-          <li><strong>v0.3.0</strong> — 新增浏览器原生⭐按钮双向同步 / 自动刷新 / 统计行 / 帮助页</li>
+          <li>
+            <strong>v0.3.0</strong> —
+            <ul>
+              <li>chrome.bookmarks 双向同步（⭐按钮实时进扩展 + 浏览器改标题/URL 同步）</li>
+              <li>enrich 状态追踪（pending / ok / partial / failed 徽标 + 错误原因 hover 提示）</li>
+              <li>「⚠ 待处理」筛选（pending + partial + failed），统计行数字可点击</li>
+              <li>书签页统计行（总数 / 7天新增 / 30天新增 / AI 分类 / 死链 / 重复 / 最后添加时间）</li>
+              <li>排序下拉（按时间 / 按名称 / 按访问次数）</li>
+              <li>大数据集兼容（LIST_BOOKMARKS 分页 + search 全量返回）</li>
+              <li>filter + search 交集（之前是互斥）</li>
+              <li>帮助页（你正在看的这个）</li>
+            </ul>
+          </li>
           <li><strong>v0.2.0</strong> — 整体 UI 精致功能风改版 / 标签可视化 / 分类可视化</li>
           <li><strong>v0.1.0</strong> — 初始版本 / AI 自动分类 / 语义搜索 / 死链检测</li>
         </ul>
