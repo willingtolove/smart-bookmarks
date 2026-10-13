@@ -10,11 +10,29 @@ type Tab = 'bookmarks' | 'tags' | 'categories' | 'hotness' | 'cleanup' | 'help' 
 export type Filter = { kind: 'tag' | 'category'; value: string };
 
 export function Options() {
-  const [tab, setTab] = useState<Tab>('bookmarks');
+  // 支持从 URL 初始化 tab + 搜索词（omnibox 跳转用：?tab=bookmarks&q=nest）
+  const initial = useMemo(() => {
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      const tabParam = sp.get('tab') as Tab | null;
+      const qParam = sp.get('q') ?? '';
+      const validTabs: Tab[] = ['bookmarks', 'tags', 'categories', 'hotness', 'cleanup', 'help', 'settings'];
+      return {
+        tab: tabParam && validTabs.includes(tabParam) ? tabParam : 'bookmarks' as Tab,
+        q: qParam,
+      };
+    } catch {
+      return { tab: 'bookmarks' as Tab, q: '' };
+    }
+  }, []);
+
+  const [tab, setTab] = useState<Tab>(initial.tab);
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<Filter | null>(null);
+  // omnibox 跳转时预填的搜索词
+  const initialQ = initial.q;
 
   const reload = async () => {
     setLoading(true);
@@ -86,6 +104,7 @@ export function Options() {
             onChange={reload}
             filter={filter}
             onClearFilter={() => setFilter(null)}
+            initialQ={initialQ}
           />
         )}
         {tab === 'tags' && <TagsView bookmarks={bookmarks} onOpenFilter={openFiltered} />}
@@ -158,14 +177,16 @@ function BookmarksView({
   onChange,
   filter,
   onClearFilter,
+  initialQ,
 }: {
   bookmarks: Bookmark[];
   settings: Settings;
   onChange: () => Promise<void> | void;
   filter: Filter | null;
   onClearFilter: () => void;
+  initialQ?: string;
 }) {
-  const [q, setQ] = useState('');
+  const [q, setQ] = useState(initialQ ?? '');
   const dq = useDebounce(q, 200);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [statusFilter, setStatusFilter] = useState<'all' | Bookmark['status'] | 'needs-attention'>('all');
@@ -1239,6 +1260,32 @@ function HelpView() {
             <div className="help-card-title">③ 右键菜单</div>
             <p>右键页面 →「保存到 Smart Bookmarks」。也可以右键链接直接保存链接目标。</p>
           </div>
+        </div>
+      </section>
+
+      {/* ============ 地址栏搜索（Omnibox） ============ */}
+      <section className="help-section">
+        <h2>⌨️ 地址栏搜索（Omnibox）</h2>
+        <p>
+          不用打开 popup，直接在 Chrome 地址栏搜：输入 <kbd>sb</kbd> + <kbd>空格</kbd> 切换到 Smart Bookmarks 搜索模式。
+        </p>
+        <ul className="help-list">
+          <li>
+            <strong>敲关键词 + 直接 Enter</strong> — 打开「管理面板 → 书签」页，自动搜索关键词，看全部匹配
+          </li>
+          <li>
+            <strong>↓ 选某条 + Enter</strong> — 直接打开那个书签
+          </li>
+          <li>
+            <strong>Alt+Enter</strong> — 在新前台标签打开书签
+          </li>
+          <li>
+            <strong>空关键词 + Enter</strong> — 打开「管理面板 → 书签」页（无搜索词）
+          </li>
+        </ul>
+        <div className="help-tip">
+          <strong>💡 设计取舍：</strong>chrome 的 omnibox 占位符（灰色提示）无法绑定快捷动作。
+          我们用 onInputEntered 收到的 query 字符串（不是 url）来识别「直接 Enter = 打开 Options 搜索」——简单可靠。
         </div>
       </section>
 

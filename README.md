@@ -6,10 +6,13 @@
 
 - **AI 自动分类 / 摘要 / 打标签**：保存时自动抽取正文 → 调用大模型（OpenAI / DeepSeek / 任意 OpenAI 兼容端点）→ 返回结构化 JSON 并写入书签。
 - **语义 / 模糊 / 全文搜索**：默认基于 Fuse.js 的多字段模糊搜索；开启 AI 后追加向量余弦相似度，支持按「意思」找书签。
+- **地址栏 Omnibox 搜索**：在 Chrome 地址栏输入 `sb ` 即可搜索书签，实时下拉 8 条匹配，直接 Enter 进 Options 全量搜索，↓ 选条直接打开。
+- **书签热度排行**：基于真实访问次数（`chrome.tabs` 监听自动累加），支持总榜 / 本周 / 本月三个时段，Top 3 金银铜高亮。
+- **浏览器⭐按钮双向同步**：监听 `chrome.bookmarks.onCreated/onChanged`，用户在浏览器原生书签栏加的书签也会进扩展。
 - **死链检测**：周期 + 手动两路触发；HEAD 失败时自动回退到带 `Range` 的 GET，记录 HTTP 状态与最终 URL。
 - **重复识别**：按规范化 URL 自动归组，保留访问次数最多者。
 - **智能推荐**：基于时间衰减 + 访问频次 + 分类/标签共现，Popup 顶部展示。
-- **本地优先 + 可导入导出**：数据存于 IndexedDB；一键导出 JSON，亦可与浏览器原生书签双向同步（首次安装自动迁移）。
+- **本地优先 + 可导入导出**：数据存于 IndexedDB；一键导出 JSON。
 - **快捷键 / 右键菜单 / Popup / Options 面板** 完整 UI。
 - **深浅色自适应**。
 
@@ -100,6 +103,24 @@ pnpm build
 2. AI Embedding 余弦相似度：仅在 `ai.embedding` 存在时参与
 3. 最终按 `score` 倒序
 
+### 地址栏 Omnibox 搜索
+
+manifest 注册 `omnibox: { keyword: 'sb' }`，地址栏输入 `sb ` 触发扩展搜索模式：
+
+- **直接 Enter** — 打开「Options → 书签」页，自动搜索关键词，看全量匹配
+- **↓ 选条 + Enter** — 打开该书签
+- **Alt+Enter** — 在新前台标签打开
+- **空关键词 + Enter** — 打开「Options → 书签」页
+
+Omnibox 搜索复用 `searchBookmarks()`（Fuse + 语义合并），与 Popup / Options 共享同一份搜索实现。
+SW 端 `chrome.omnibox.onInputChanged` 实时推 8 条 suggestion，`onInputEntered` 根据 `text` 是不是 http url 区分「打开书签」还是「打开 Options 全量搜索」。
+
+### 书签热度排行
+
+SW 端通过 `chrome.tabs.onActivated` + `onUpdated` 监听真实访问，`lastCountedTabUrl` Map 防止同 tab 同 URL 重复计数。访问时 `db.putBookmark({ ...b, visitCount: +1, lastVisitedAt: now })`（URL 写入前统一 `normalizeUrl`，避免归一化不一致 bug）。
+
+Options 页「🔥 热度」tab 支持三时段（总榜 / 本周 / 本月）+ Top N 选择，Top 3 金银铜高亮。
+
 ### 死链检查
 
 通过 `chrome.alarms` 周期触发；Service Worker 限制：每次只检查 `batchSize` 条（默认 50），按 `lastCheckedAt` 升序，规避一次性大量请求。
@@ -112,9 +133,19 @@ pnpm build
 
 ## 🗺 Roadmap
 
-- 标签拖拽 / 重命名
-- 多选批量操作（分类、移动、删除）
-- 集合 / 看板视图
+**已做完（v0.3+）**：
+- ✅ Chrome 原生书签双向同步（`chrome.bookmarks.onCreated/Changed`）
+- ✅ enrich 状态追踪（⏳/⚠/✗ 徽标 + 待处理筛选）
+- ✅ 书签热度排行（真实访问追踪 + 总榜/本周/本月）
+- ✅ 地址栏 Omnibox 搜索（`sb` keyword）
+- ✅ 帮助页 + 整体 UI 精致功能风改版
+
+**计划中**：
+- 阅读状态（unread / reading / read）+ 待读清单
+- 键盘导航（Popup: j/k；Options: vim 风）
+- Saved Searches / 智能合集
+- 高亮 / 批注（content script + `highlights[]`）
+- AI 对话（基于书签的 RAG）
 - 端到端加密的云同步（自建可选后端）
 - Firefox 兼容（WebExtensions 差异适配）
 

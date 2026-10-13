@@ -35,6 +35,7 @@ export default defineManifest({
     },
   ],
   options_page: 'src/options.html',
+  omnibox: { keyword: 'sb' },
   permissions: [
     'bookmarks',
     'storage',

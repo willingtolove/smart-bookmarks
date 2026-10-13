@@ -5,6 +5,7 @@ import { newId, normalizeUrl } from '../core/util';
 import { checkOne, findDuplicates } from '../core/deadLink';
 import { AiClient } from '../core/ai';
 import { extractReadableFromString, type Extracted } from '../core/extract';
+import { searchBookmarks } from '../core/search';
 import type { Bookmark, Settings } from '../types';
 
 const ALARM_DEADLINK = 'smart-bookmarks.deadlink';
@@ -692,4 +693,125 @@ async function migrateBrowserBookmarks() {
   } catch (e) {
     console.warn('[migrate] failed', e);
   }
+}
+
+/* ===========================================================
+ * Omnibox（地址栏搜索）—— 用户输入 `sbm ` 进入扩展搜索模式
+ *
+ * 实现要点（踩过的坑）：
+ * - chrome.omnibox.setDefaultSuggestion **不接受 content 字段**（实测抛
+ *   "Unexpected property: 'content'" 会让整个 SW 崩）。所以占位符只能是
+ *   静态提示文案，**用户没法靠直接 Enter 触发占位符**。
+ * - 每次 onInputChanged 都通过 suggestFn 推真实书签 suggestion（content = url）
+ * - chrome 行为：
+ *   - 用户 ↓ 选某条 + Enter → onInputEntered 收到 SuggestResult.content（即 url）
+ *   - 用户**没选条直接 Enter** → onInputEntered 收到**用户敲的 query 字符串**
+ *   - Alt+Enter → disposition === 'newForegroundTab'
+ * - 我们用 onInputEntered 收到的 text 是不是 http 开头判断：
+ *   - 是 url → 打开书签
+ *   - 不是 url（= query）→ 打开 Options + 自动搜索（这是用户最常想要的行为）
+ * =========================================================== */
+
+const OMNIBOX_LIMIT = 8;
+const OMNIBOX_OPEN_POPUP = '__open_popup__';
+
+// 占位符（灰色斜体提示）：用户首次进入 omnibox 看到的引导文案
+chrome.omnibox.setDefaultSuggestion({
+  description:
+    '🔍 <dim>⏎ Enter 打开 Options 搜索</dim>   ' +
+    '↗️ <dim>↓ 选条直接打开书签</dim>   ' +
+    '⚡ <dim>Alt+Enter 新标签打开</dim>',
+});
+
+chrome.omnibox.onInputChanged.addListener(async (text, suggestFn) => {
+  const q = text.trim();
+  if (!q) {
+    // 空输入：只推「打开搜索面板」一条占位
+    suggestFn([
+      { content: OMNIBOX_OPEN_POPUP, description: '🔍 打开搜索面板' },
+    ]);
+    return;
+  }
+  try {
+    const bookmarks = await db.listBookmarks();
+    const settings = await db.getSettings();
+    const results = await searchBookmarks({
+      query: q,
+      bookmarks,
+      settings,
+      limit: OMNIBOX_LIMIT,
+    });
+    // 只推真实书签（content = url）。用户没选条直接 Enter 时
+    // onInputEntered 收到的是 query 字符串，会走 fallback 打开 Options
+    const suggestions: chrome.omnibox.SuggestResult[] = results.map((b) => ({
+      content: b.url,
+      description: formatOmniboxRow(b),
+    }));
+    suggestFn(suggestions);
+  } catch (e) {
+    console.error('[omnibox] search failed', { text, error: e });
+    suggestFn([]);
+  }
+});
+
+chrome.omnibox.onInputEntered.addListener((text, disposition) => {
+  if (!text) {
+    // 空 + Enter → 打开 Options 书签页
+    openOptionsWithQuery('');
+    return;
+  }
+  if (text === OMNIBOX_OPEN_POPUP) {
+    openPopup();
+    return;
+  }
+  if (!/^https?:\/\//.test(text)) {
+    // 不是 url → 用户没选条直接 Enter，text 就是 query → 打开 Options 全量搜索
+    openOptionsWithQuery(text);
+    return;
+  }
+  // 是 url → 打开书签
+  if (disposition === 'currentTab') {
+    chrome.tabs.update({ url: text });
+  } else {
+    chrome.tabs.create({
+      url: text,
+      active: disposition === 'newForegroundTab',
+    });
+  }
+});
+
+function openOptionsWithQuery(q: string) {
+  const url = q
+    ? chrome.runtime.getURL(`src/options.html?tab=bookmarks&q=${encodeURIComponent(q)}`)
+    : chrome.runtime.getURL('src/options.html?tab=bookmarks');
+  chrome.tabs.create({ url });
+}
+
+function openPopup() {
+  try {
+    chrome.action.openPopup().catch((e) => {
+      console.warn('[omnibox] openPopup failed, fallback to options', e);
+      openOptionsWithQuery('');
+    });
+  } catch (e) {
+    console.warn('[omnibox] openPopup threw, fallback to options', e);
+    openOptionsWithQuery('');
+  }
+}
+
+/** omnibox description 行：「标题 · AI摘要」  + 灰色 url */
+function formatOmniboxRow(b: Bookmark): string {
+  const title = xmlEscape((b.title ?? '').slice(0, 60));
+  const summary = b.ai?.summary
+    ? ` · ${xmlEscape(b.ai.summary.slice(0, 50))}`
+    : '';
+  const url = xmlEscape(b.url);
+  const tags = b.ai?.tags?.length
+    ? `  [${xmlEscape(b.ai.tags.slice(0, 3).join(' / '))}]`
+    : '';
+  return `${title}${summary}${tags}  <dim>${url}</dim>`;
+}
+
+function xmlEscape(s: string): string {
+  return s.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]!);
 }
