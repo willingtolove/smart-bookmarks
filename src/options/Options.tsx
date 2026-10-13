@@ -5,7 +5,7 @@ import { useDebounce } from '../ui/hooks';
 import { DEFAULT_SETTINGS, type Bookmark, type SearchResult, type Settings } from '../types';
 import { downloadJSON, newId } from '../core/util';
 
-type Tab = 'bookmarks' | 'tags' | 'categories' | 'cleanup' | 'help' | 'settings';
+type Tab = 'bookmarks' | 'tags' | 'categories' | 'hotness' | 'cleanup' | 'help' | 'settings';
 
 export type Filter = { kind: 'tag' | 'category'; value: string };
 
@@ -69,7 +69,7 @@ export function Options() {
           <span className="brand-ver">v0.2.0</span>
         </div>
         <nav>
-          {(['bookmarks', 'tags', 'categories', 'cleanup', 'help', 'settings'] as Tab[]).map((t) => (
+          {(['bookmarks', 'tags', 'categories', 'hotness', 'cleanup', 'help', 'settings'] as Tab[]).map((t) => (
             <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>
               {iconOf(t)}
               <span>{labelOf(t)}</span>
@@ -90,6 +90,7 @@ export function Options() {
         )}
         {tab === 'tags' && <TagsView bookmarks={bookmarks} onOpenFilter={openFiltered} />}
         {tab === 'categories' && <CategoriesView bookmarks={bookmarks} onOpenFilter={openFiltered} />}
+        {tab === 'hotness' && <HotnessView bookmarks={bookmarks} />}
         {tab === 'cleanup' && <CleanupView bookmarks={bookmarks} onChange={reload} />}
         {tab === 'help' && <HelpView />}
         {tab === 'settings' && (
@@ -107,7 +108,7 @@ export function Options() {
 }
 
 function labelOf(t: Tab) {
-  return { bookmarks: '书签', tags: '标签', categories: '分类', cleanup: '清理', help: '帮助', settings: '设置' }[t];
+  return { bookmarks: '书签', tags: '标签', categories: '分类', hotness: '热度', cleanup: '清理', help: '帮助', settings: '设置' }[t];
 }
 
 /** 内联 SVG 图标 — 16x16，stroke-only，继承 currentColor */
@@ -126,6 +127,10 @@ function iconOf(t: Tab) {
       </>);
     case 'categories':
       return wrap(<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" {...stroke} />);
+    case 'hotness':
+      return wrap(<>
+        <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z" {...stroke} />
+      </>);
     case 'cleanup':
       return wrap(<>
         <path d="M3 6h18" {...stroke} />
@@ -957,6 +962,150 @@ function CategoriesView({ bookmarks, onOpenFilter }: { bookmarks: Bookmark[]; on
       )}
     </div>
   );
+}
+
+/**
+ * 热度排行：根据 visitCount 排序，附三个时间窗（总榜 / 本周 / 本月）。
+ * 数据源：SW 端 chrome.tabs.onActivated / onUpdated 实时累加 visitCount + lastVisitedAt。
+ */
+function HotnessView({ bookmarks }: { bookmarks: Bookmark[] }) {
+  const [period, setPeriod] = useState<'all' | '7d' | '30d'>('all');
+  const [topN, setTopN] = useState(50);
+
+  const ranked = useMemo(() => {
+    const now = Date.now();
+    let filtered = bookmarks.filter((b) => (b.visitCount ?? 0) > 0);
+    if (period === '7d') {
+      filtered = filtered.filter((b) => (b.lastVisitedAt ?? 0) >= now - 7 * 86400000);
+    } else if (period === '30d') {
+      filtered = filtered.filter((b) => (b.lastVisitedAt ?? 0) >= now - 30 * 86400000);
+    }
+    return filtered
+      .slice()
+      .sort(
+        (a, b) =>
+          (b.visitCount ?? 0) - (a.visitCount ?? 0) ||
+          (b.lastVisitedAt ?? 0) - (a.lastVisitedAt ?? 0),
+      )
+      .slice(0, topN);
+  }, [bookmarks, period, topN]);
+
+  const totalVisits = useMemo(
+    () => bookmarks.reduce((s, b) => s + (b.visitCount ?? 0), 0),
+    [bookmarks],
+  );
+
+  return (
+    <div>
+      <h1>🔥 热度排行</h1>
+      <p style={{ color: 'var(--muted)', margin: '0 0 16px' }}>
+        基于真实访问次数（浏览器打开标签页自动累加，不依赖手动保存）。
+        切换窗口查看不同时间维度的热门书签。
+      </p>
+
+      {/* 统计行 */}
+      <div className="stats-line" style={{ marginBottom: 16 }}>
+        <span className="stats-item">
+          有访问的书签 <strong>{ranked.length === topN ? `${topN}+` : ranked.length}</strong> / 总 <strong>{bookmarks.length}</strong>
+        </span>
+        <span className="stats-sep">·</span>
+        <span className="stats-item">
+          累计访问 <strong>{totalVisits}</strong> 次
+        </span>
+        {ranked[0] && (
+          <>
+            <span className="stats-sep">·</span>
+            <span className="stats-meta">
+              🏆 当前榜首：{ranked[0].title.slice(0, 30)}{ranked[0].title.length > 30 ? '…' : ''}（{ranked[0].visitCount} 次）
+            </span>
+          </>
+        )}
+      </div>
+
+      <div className="toolbar">
+        <select value={period} onChange={(e) => setPeriod(e.target.value as typeof period)} title="时间窗口">
+          <option value="all">总榜（全部时间）</option>
+          <option value="7d">本周热门</option>
+          <option value="30d">本月热门</option>
+        </select>
+        <select value={topN} onChange={(e) => setTopN(Number(e.target.value))} title="显示数量">
+          <option value={20}>前 20</option>
+          <option value={50}>前 50</option>
+          <option value={100}>前 100</option>
+          <option value={500}>前 500</option>
+        </select>
+      </div>
+
+      {ranked.length === 0 ? (
+        <div className="empty">
+          <span className="empty-icon">📊</span>
+          <div className="empty-title">
+            {period === 'all' ? '还没有访问记录' : '该时间窗口内没有访问'}
+          </div>
+          <div className="empty-hint">
+            {period === 'all'
+              ? '在浏览器里打开你已保存的书签页面，本页会自动统计访问次数。'
+              : '试试切换到「总榜」查看全部时间。'}
+          </div>
+        </div>
+      ) : (
+        <div className="rank-list">
+          {ranked.map((b, i) => {
+            const rank = i + 1;
+            return (
+              <div key={b.id} className={`rank-item ${rank <= 3 ? `rank-top-${rank}` : ''}`}>
+                <div className="rank-number">{rank}</div>
+                <div className="rank-body">
+                  <a
+                    href={b.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="rank-title"
+                    title="新标签打开"
+                  >
+                    {b.title}
+                  </a>
+                  <div className="rank-meta">
+                    <span className="rank-visits">访问 <strong>{b.visitCount}</strong> 次</span>
+                    <span className="stats-sep">·</span>
+                    <span>最后访问 {relativeTime(b.lastVisitedAt)}</span>
+                    {b.ai?.category && (
+                      <>
+                        <span className="stats-sep">·</span>
+                        <span>{b.ai.category}</span>
+                      </>
+                    )}
+                    {(b.ai?.tags ?? []).slice(0, 3).map((t) => (
+                      <span key={t} className="rank-tag">#{t}</span>
+                    ))}
+                  </div>
+                </div>
+                <div className="rank-actions">
+                  <button className="btn ghost" onClick={() => api.openUrl(b.url)} title="打开">
+                    ↗
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 相对时间显示（X 分钟前 / X 小时前 / X 天前 / YYYY-MM-DD） */
+function relativeTime(ts?: number): string {
+  if (!ts) return '从未';
+  const diff = Date.now() - ts;
+  const min = Math.floor(diff / 60000);
+  if (min < 1) return '刚刚';
+  if (min < 60) return `${min} 分钟前`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} 小时前`;
+  const day = Math.floor(hr / 24);
+  if (day < 30) return `${day} 天前`;
+  return new Date(ts).toLocaleDateString('zh-CN');
 }
 
 function CleanupView({

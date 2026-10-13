@@ -14,6 +14,39 @@ const SW_VERSION = '0.3.0';
 
 console.log('[smart-bookmarks] SW booted', { version: SW_VERSION });
 
+/** 真实访问追踪：用户切到/打开已保存的书签页面时 +1 visitCount。
+ *  之前 visitCount 只在「再保存一次」时 +1，没法做热度排行。
+ *  用 lastCountedTabUrl 防止同 tab 同 URL 重复计数。 */
+const lastCountedTabUrl = new Map<number, string>();
+
+async function tryCountVisit(tabId: number, url?: string) {
+  try {
+    const target = url ?? (await chrome.tabs.get(tabId)).url;
+    if (!target || !target.startsWith('http')) return;
+    if (lastCountedTabUrl.get(tabId) === target) return; // 同 tab 同 URL 已计过
+    // 先查 DB，再决定是否登记到 Map —— 否则未保存的 URL 也会占位，
+    // 之后用户在这标签里切换到新书签页时，因 URL 不再匹配可能反而被漏掉。
+    const b = await db.getBookmarkByUrl(normalizeUrl(target));
+    if (!b) return;
+    lastCountedTabUrl.set(tabId, target);
+    await db.putBookmark({
+      ...b,
+      visitCount: (b.visitCount ?? 0) + 1,
+      lastVisitedAt: Date.now(),
+    });
+    // 不广播 BOOKMARKS_CHANGED —— 浏览时频繁触发会扰民。
+    // 用户打开热度页时会主动 reload。
+  } catch {
+    /* tab 可能已关闭，忽略 */
+  }
+}
+
+chrome.tabs.onActivated.addListener(({ tabId }) => void tryCountVisit(tabId));
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.url) void tryCountVisit(tabId, changeInfo.url);
+});
+chrome.tabs.onRemoved.addListener((tabId) => lastCountedTabUrl.delete(tabId));
+
 /** 广播书签库变更（新增 / 删除 / 批量操作 / 导入）—— 让 Options 自动刷新，避免用户手动点刷新按钮 */
 function notifyBookmarksChanged(reason: string) {
   chrome.runtime
@@ -64,7 +97,7 @@ async function fetchAndExtract(url: string, timeoutMs = 8000): Promise<Extracted
 /** 把 Chrome 原生书签库的一条新书签同步进 IndexedDB。已存在则更新，不存在则新建。 */
 async function syncBrowserBookmarkToLocal(browserId: string, node: chrome.bookmarks.BookmarkTreeNode) {
   if (!node.url) return; // 跳过文件夹
-  const url = node.url;
+  const url = normalizeUrl(node.url);
   const existing =
     (await db.getBookmarkByBrowserId(browserId)) ??
     (await db.getBookmarkByUrl(normalizeUrl(url)));
@@ -121,7 +154,7 @@ function setupBrowserBookmarkSync() {
       await db.putBookmark({
         ...local,
         title: changeInfo.title ?? local.title,
-        url: changeInfo.url ?? local.url,
+        url: changeInfo.url ? normalizeUrl(changeInfo.url) : local.url,
         updatedAt: Date.now(),
       });
       notifyBookmarksChanged('browser-sync-changed');
@@ -138,11 +171,12 @@ async function getSettings(): Promise<Settings> {
 async function saveCurrentTab(tab?: chrome.tabs.Tab | null) {
   if (!tab) tab = (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
   if (!tab?.url || !tab.title) return;
-  const url = tab.url;
-  const existing = await db.getBookmarkByUrl(normalizeUrl(url));
+  const url = normalizeUrl(tab.url);
+  const existing = await db.getBookmarkByUrl(url);
   if (existing) {
-    await db.putBookmark({ ...existing, visitCount: existing.visitCount + 1, lastVisitedAt: Date.now() });
-    notifyBookmarksChanged('visit-bump');
+    // 访问次数由 chrome.tabs.onActivated/onUpdated 自动累加，
+    // 手动再保存不应该 +1，否则用户每按一次 Ctrl+Shift+S 就刷一次热度数据。
+    notifyBookmarksChanged('save-existing');
     return;
   }
   const now = Date.now();
