@@ -337,7 +337,7 @@ async function reextractBookmark(id: string) {
   console.info('[reextract] done', { id });
 }
 
-type BatchMode = 'delete' | 'enrich' | 'reextract';
+type BatchMode = 'delete' | 'enrich' | 'reextract' | 'reanalyze';
 
 async function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -361,18 +361,27 @@ async function runBatch(ids: string[], mode: BatchMode, batchId: string) {
   for (let i = 0; i < ids.length; i++) {
     const id = ids[i];
     try {
-      if (mode === 'delete') {
-        await db.deleteBookmark(id);
-      } else if (mode === 'enrich') {
-        await enrichBookmark(id);
-      } else {
-        await reextractBookmark(id);
+      switch (mode) {
+        case 'delete':
+          await db.deleteBookmark(id);
+          break;
+        case 'enrich':
+          await enrichBookmark(id);
+          break;
+        case 'reextract':
+          await reextractBookmark(id);
+          break;
+        case 'reanalyze':
+          // 重新分析 = 重抽 + 重分类（enrichBookmark 内部已包含两步）
+          await enrichBookmark(id);
+          break;
       }
       reportProgress(batchId, i + 1, ids.length, id, 'ok');
     } catch (e) {
       console.error(`[batch] ${mode} failed`, { batchId, id, error: e });
       reportProgress(batchId, i + 1, ids.length, id, 'fail', String(e));
     }
+    // 智能类（IO 慢）保留 200ms 间隔
     await sleep(200);
   }
   reportProgress(batchId, ids.length, ids.length, '', 'ok', undefined);
@@ -590,6 +599,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         }
         case 'BATCH_REEXTRACT': {
           void runBatch(msg.ids ?? [], 'reextract', msg.batchId);
+          sendResponse({ ok: true });
+          break;
+        }
+        case 'BATCH_REANALYZE': {
+          void runBatch(msg.ids ?? [], 'reanalyze', msg.batchId);
           sendResponse({ ok: true });
           break;
         }

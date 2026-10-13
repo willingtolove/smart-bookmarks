@@ -48,6 +48,8 @@ export const api = {
     send<{ ok: boolean }>('BATCH_ENRICH', { ids, batchId }),
   batchReextract: (ids: string[], batchId: string) =>
     send<{ ok: boolean }>('BATCH_REEXTRACT', { ids, batchId }),
+  batchReanalyze: (ids: string[], batchId: string) =>
+    send<{ ok: boolean }>('BATCH_REANALYZE', { ids, batchId }),
 };
 
 export interface BatchProgressPayload {

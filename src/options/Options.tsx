@@ -341,14 +341,19 @@ function BookmarksView({
   }, [someChecked]);
 
   // 批量操作
-  const runBatch = async (mode: 'delete' | 'enrich' | 'reextract') => {
+  type BatchKind =
+    | 'delete' | 'enrich' | 'reextract'
+    | 'reanalyze';
+
+  const runBatch = async (mode: BatchKind) => {
     const ids = Array.from(selected);
     if (ids.length === 0) return;
     const batchId = newId();
-    const titleMap: Record<typeof mode, string> = {
+    const titleMap: Record<BatchKind, string> = {
       delete: '批量删除',
       enrich: '批量重分类',
       reextract: '批量重抽正文',
+      reanalyze: '批量重新分析',
     };
     setBatchTitle(titleMap[mode]);
     setBatchProgress({ batchId, done: 0, total: ids.length, currentId: '', status: 'ok' });
@@ -362,12 +367,11 @@ function BookmarksView({
     // Bug 6: 任务发起后立即清空 selected（剩下的由 onChange → reload 接管，
     // 2 秒后 Toast 关闭时再兜底清一次）
     setSelected(new Set());
-    if (mode === 'delete') {
-      await api.batchDelete(ids, batchId);
-    } else if (mode === 'enrich') {
-      await api.batchEnrich(ids, batchId);
-    } else {
-      await api.batchReextract(ids, batchId);
+    switch (mode) {
+      case 'delete': await api.batchDelete(ids, batchId); break;
+      case 'enrich': await api.batchEnrich(ids, batchId); break;
+      case 'reextract': await api.batchReextract(ids, batchId); break;
+      case 'reanalyze': await api.batchReanalyze(ids, batchId); break;
     }
   };
 
@@ -570,10 +574,7 @@ function BookmarksView({
             <span style={{ color: 'var(--accent)', fontSize: 13, fontWeight: 600 }}>
               已选 {selected.size} 项
             </span>
-            <button className="btn ghost" onClick={() => runBatch('enrich')}>重分类</button>
-            <button className="btn ghost" onClick={() => runBatch('reextract')}>重抽正文</button>
-            <button className="btn ghost" style={{ color: 'var(--danger)' }} onClick={() => runBatch('delete')}>删除</button>
-            <button className="btn ghost" onClick={clearSelection} title="取消选择" style={{ padding: '4px 8px' }}>✕</button>
+            <BatchActionsMenu onAction={runBatch} onClear={clearSelection} />
           </>
         )}
       </div>
@@ -1127,6 +1128,89 @@ function relativeTime(ts?: number): string {
   const day = Math.floor(hr / 24);
   if (day < 30) return `${day} 天前`;
   return new Date(ts).toLocaleDateString('zh-CN');
+}
+
+/* ===========================================================
+ * BatchActionsMenu：批量操作下拉菜单（智能 / 危险 两分组）
+ *
+ * 设计取舍：删掉了「编辑」组（添加/移除标签、移动到分类）。
+ * 理由：有 AI 时代，用户不需要手动维护标签/分类 —— 让 AI 处理就好。
+ * =========================================================== */
+
+type BatchActionKind =
+  | 'reanalyze' | 'enrich' | 'reextract'
+  | 'delete';
+
+function BatchActionsMenu({
+  onAction,
+  onClear,
+}: {
+  onAction: (kind: BatchActionKind) => Promise<void> | void;
+  onClear: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // 关闭逻辑：点击外面 / Esc
+  useEffect(() => {
+    if (!open) return;
+    const onClickOutside = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onClickOutside);
+    document.addEventListener('keydown', onEsc);
+    return () => {
+      document.removeEventListener('mousedown', onClickOutside);
+      document.removeEventListener('keydown', onEsc);
+    };
+  }, [open]);
+
+  const fire = (kind: BatchActionKind) => {
+    void onAction(kind);
+    setOpen(false);
+  };
+
+  return (
+    <div className="batch-menu" ref={ref}>
+      <button className="btn ghost" onClick={() => setOpen((o) => !o)}>
+        ⚙ 操作 ▾
+      </button>
+      <button
+        className="btn ghost"
+        onClick={onClear}
+        title="取消选择"
+        style={{ padding: '4px 8px' }}
+      >
+        ✕
+      </button>
+      {open && (
+        <div className="batch-menu-dropdown" role="menu">
+          <div className="menu-group-title">智能</div>
+          <button className="menu-item" onClick={() => fire('reanalyze')}>
+            🔄 重新分析（重抽 + 重分类）
+          </button>
+          <button className="menu-item" onClick={() => fire('enrich')}>
+            🏷 仅重分类
+          </button>
+          <button className="menu-item" onClick={() => fire('reextract')}>
+            📝 仅重抽正文
+          </button>
+
+          <div className="menu-divider" />
+          <div className="menu-group-title menu-group-danger">危险</div>
+          <button
+            className="menu-item menu-item-danger"
+            onClick={() => fire('delete')}
+          >
+            🗑 删除
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function CleanupView({
