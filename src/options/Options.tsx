@@ -1457,6 +1457,34 @@ function HelpView() {
         </ul>
       </section>
 
+      {/* ============ 批量操作 ============ */}
+      <section className="help-section">
+        <h2>⚙️ 批量操作</h2>
+        <p>
+          在「书签」页勾选若干条（可点表头或工具栏的「全选当前 (N)」全选当前过滤结果），右上角会出现「⚙ 操作 ▾」下拉菜单：
+        </p>
+        <ul className="help-list">
+          <li>
+            <strong>🔄 重新分析（重抽 + 重分类）</strong> — 适用于换 AI 模型 / API key 后重跑全部书签
+          </li>
+          <li>
+            <strong>🏷 仅重分类</strong> — 保留 content，只重跑 AI 分类（速度比「重新分析」快）
+          </li>
+          <li>
+            <strong>📝 仅重抽正文</strong> — content 缺失或乱码时用，重抓 + 重分析
+          </li>
+          <li>
+            <strong>🗑 删除</strong> — 危险区，需 confirm 确认
+          </li>
+        </ul>
+        <div className="help-tip">
+          <strong>💡 设计取舍：</strong>我们<strong>不</strong>提供手动添加/移除标签、移动到分类这类操作。理由：AI 时代让用户远离手动维护——AI 自动打标签、自动归类，你只需要在「重新分析」一键触发。
+        </div>
+        <p>
+          进度通过底部 Toast 显示「X / Y」，完成时自动消失。所有批量操作共用同一条 <code>runBatch</code> 通道，SW 端串行执行避免 API 限流。
+        </p>
+      </section>
+
       {/* ============ FAQ ============ */}
       <section className="help-section">
         <h2>❓ 常见问题</h2>
