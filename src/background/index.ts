@@ -201,7 +201,7 @@ async function saveCurrentTab(tab?: chrome.tabs.Tab | null) {
   void enrichBookmark(bookmark.id);
 }
 
-async function enrichBookmark(id: string) {
+async function enrichBookmark(id: string, opts: { silent?: boolean } = {}) {
   const b = await db.getBookmark(id);
   if (!b) {
     console.warn('[enrich] bookmark not found', { id });
@@ -241,7 +241,7 @@ async function enrichBookmark(id: string) {
       enrichedAt: Date.now(),
       updatedAt: Date.now(),
     });
-    notifyBookmarksChanged('enrich-failed');
+    if (!opts.silent) notifyBookmarksChanged('enrich-failed');
     return;
   }
 
@@ -294,7 +294,7 @@ async function enrichBookmark(id: string) {
   updated.enrichedAt = Date.now();
 
   await db.putBookmark(updated);
-  notifyBookmarksChanged('enrich-' + updated.enrichStatus);
+  if (!opts.silent) notifyBookmarksChanged('enrich-' + updated.enrichStatus);
   console.info('[enrich] done', { id, status: updated.enrichStatus, hasAi: !!updated.ai });
 }
 
@@ -366,14 +366,15 @@ async function runBatch(ids: string[], mode: BatchMode, batchId: string) {
           await db.deleteBookmark(id);
           break;
         case 'enrich':
-          await enrichBookmark(id);
+          // silent: true 抑制 enrichBookmark 内部广播（runBatch 末尾会统一广播 batch-${mode}）
+          await enrichBookmark(id, { silent: true });
           break;
         case 'reextract':
           await reextractBookmark(id);
           break;
         case 'reanalyze':
           // 重新分析 = 重抽 + 重分类（enrichBookmark 内部已包含两步）
-          await enrichBookmark(id);
+          await enrichBookmark(id, { silent: true });
           break;
       }
       reportProgress(batchId, i + 1, ids.length, id, 'ok');

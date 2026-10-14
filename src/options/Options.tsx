@@ -34,8 +34,8 @@ export function Options() {
   // omnibox 跳转时预填的搜索词
   const initialQ = initial.q;
 
-  const reload = async () => {
-    setLoading(true);
+  const reload = async (showLoading = true) => {
+    if (showLoading) setLoading(true);
     const r = await api.list((loaded, total) => {
       console.info(`[reload] loading ${loaded}/${total}`);
     });
@@ -43,10 +43,10 @@ export function Options() {
     setBookmarks(r.data);
     const s = await api.getSettings();
     if (s.data) setSettings(s.data);
-    setLoading(false);
+    if (showLoading) setLoading(false);
   };
   useEffect(() => {
-    void reload();
+    void reload(true);
   }, []);
 
   // 监听 SW 广播的书签变更 —— Options 页打开期间，从 popup / 快捷键 / 右键菜单新增的书签会自动刷新
@@ -84,7 +84,7 @@ export function Options() {
         <div className="brand">
           <span className="brand-logo">🧠</span>
           <span className="brand-name">Smart Bookmarks</span>
-          <span className="brand-ver">v0.2.0</span>
+          <span className="brand-ver">v{__APP_VERSION__}</span>
         </div>
         <nav>
           {(['bookmarks', 'tags', 'categories', 'hotness', 'cleanup', 'help', 'settings'] as Tab[]).map((t) => (
@@ -714,6 +714,7 @@ function BookmarksView({
         <BatchProgressToast
           title={batchTitle}
           progress={batchProgress}
+          bookmarks={bookmarks}
           onClose={() => {
             if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
             setBatchProgress(null);
@@ -730,10 +731,12 @@ function BookmarksView({
 function BatchProgressToast({
   title,
   progress,
+  bookmarks,
   onClose,
 }: {
   title: string;
   progress: BatchProgressPayload;
+  bookmarks: Bookmark[];
   onClose: () => void;
 }) {
   const [errors, setErrors] = useState<Array<{ id: string; error: string }>>([]);
@@ -747,6 +750,14 @@ function BatchProgressToast({
     }
   }, [progress]);
 
+  // 当前正在处理的书签（id → title）
+  const currentTitle = progress.currentId
+    ? bookmarks.find((b) => b.id === progress.currentId)?.title
+    : undefined;
+  const currentUrl = progress.currentId
+    ? bookmarks.find((b) => b.id === progress.currentId)?.url
+    : undefined;
+
   const pct = Math.round((progress.done / Math.max(progress.total, 1)) * 100);
   const okCount = progress.done - errors.length;
   const done = progress.done >= progress.total;
@@ -755,6 +766,12 @@ function BatchProgressToast({
     <div className="batch-toast" role="status">
       <button className="close" onClick={onClose} aria-label="关闭">✕</button>
       <h4>{title} {done ? '✓ 完成' : ''}</h4>
+      {/* 当前处理的书签（去掉 url 显示） */}
+      {!done && currentTitle && (
+        <div className="current-item" title={currentUrl}>
+          正在处理：<strong>{currentTitle}</strong>
+        </div>
+      )}
       <div style={{ color: 'var(--muted)', fontSize: 12 }}>
         {progress.done} / {progress.total} · {pct}%
       </div>
@@ -773,11 +790,14 @@ function BatchProgressToast({
       </div>
       {expanded && errors.length > 0 && (
         <div className="errors">
-          {errors.map((e, i) => (
-            <div key={i}>
-              <code>{e.id.slice(0, 8)}</code>: {e.error}
-            </div>
-          ))}
+          {errors.map((e, i) => {
+            const eb = bookmarks.find((b) => b.id === e.id);
+            return (
+              <div key={i}>
+                <code>{e.id.slice(0, 8)}</code> {eb ? `「${eb.title}」` : ''}: {e.error}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

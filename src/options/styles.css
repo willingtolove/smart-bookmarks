@@ -365,6 +365,22 @@ tbody tr.selected .actions-col { opacity: 1; }
   font-size: var(--text-md);
   font-weight: 600;
 }
+.batch-toast .current-item {
+  font-size: var(--text-sm);
+  color: var(--fg-2);
+  margin: 0 0 6px;
+  padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.batch-toast .current-item strong {
+  color: var(--fg);
+  font-weight: 500;
+}
 .batch-toast .bar {
   height: 6px;
   background: var(--border);
